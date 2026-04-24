@@ -3,7 +3,7 @@
  * 再执行 {@link withBossSessionPage} 回调。与 `src/toolset/chat.ts`（按姓名打开会话等业务）无关。
  */
 import type { Browser, Page } from 'puppeteer-core';
-import { BOSS_CHAT_INDEX_URL, isBossZhipinSiteUrl } from './auth.js';
+import { BOSS_CHAT_INDEX_URL, isBossChatIndexUrl } from './auth.js';
 import {
   hideAgentOperatingIndicator,
   showAgentOperatingIndicator,
@@ -82,9 +82,9 @@ async function readMenuListSnapshot(page: Page): Promise<MenuListSnapshot> {
   })()`)) as MenuListSnapshot;
 }
 
-/** 仅当当前页不在 Boss 站点（非 zhipin.com / 空白等）时进入沟通页，再交由 {@link ensureMenuListStableAfterLoad} 查 `.menu-list` */
-async function ensureBossZhipinLandingBeforeMenuList(page: Page): Promise<void> {
-  if (isBossZhipinSiteUrl(page.url())) {
+/** 先按 URL 判断：非 `/web/chat/index` 则进入沟通页，再交由 {@link ensureMenuListStableAfterLoad} 查 `.menu-list` */
+async function ensureBossChatIndexUrlBeforeMenuList(page: Page): Promise<void> {
+  if (isBossChatIndexUrl(page.url())) {
     return;
   }
   await page.goto(BOSS_CHAT_INDEX_URL, { waitUntil: 'load', timeout: 60_000 });
@@ -140,7 +140,7 @@ async function ensureMenuListStableAfterLoad(page: Page): Promise<void> {
 
 /**
  * 在已连接浏览器、且当前页为 Boss 已登录主壳（含侧栏 `.menu-list` 稳定）的前提下执行回调。
- * 若当前不在 zhipin.com 则先进入沟通页 `/web/chat/index`，再校验侧栏；已在 Boss 站内（如推荐页）则不强制跳转。
+ * 会先按 URL 确保落在沟通页 `/web/chat/index`，再校验侧栏；回调内可再导航到职位/推荐等业务路由。
  */
 export async function withBossSessionPage<T>(callback: (page: Page) => Promise<T>): Promise<T> {
   const isContextDestroyed = (e: unknown): boolean => {
@@ -168,7 +168,7 @@ export async function withBossSessionPage<T>(callback: (page: Page) => Promise<T
       }
       setSessionPage(page);
       await page.bringToFront();
-      await ensureBossZhipinLandingBeforeMenuList(page);
+      await ensureBossChatIndexUrlBeforeMenuList(page);
       if (SHOULD_DISABLE_JS) {
         await page.setJavaScriptEnabled(false);
       }

@@ -477,7 +477,12 @@ async function runInteractiveLoop(): Promise<void> {
 
 export async function runCli(argv: string[]): Promise<void> {
   if (argv.length === 0) {
-    await runInteractiveLoop();
+    if (process.env.npm_lifecycle_event === 'dev') {
+      await runInteractiveLoop();
+    } else {
+      console.error('❌ 生产环境不支持交互模式。请使用 boss --help 查看可用命令。');
+      process.exit(1);
+    }
     return;
   }
 
