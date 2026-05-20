@@ -7,6 +7,7 @@ import {
   snapshotBossPageViewport,
 } from '../browser/index.js';
 import { createWaitManualLoginRequiredText } from '../common/auth.js';
+import { closeBossModalIfPresent, waitAndCloseBossModalIfPresent } from '../common/boss_modal.js';
 import {
   closeBossPaywallPopupIfPresent,
   describeBossPaywallPopupIfPresent,
@@ -19,6 +20,7 @@ import {
   isBossChatAiFormUrl,
   readDeepSearchGeekList,
   renderGeekListSection,
+  selectAiFormJob,
 } from './deep-search.js';
 import {
   clickGreet,
@@ -26,12 +28,16 @@ import {
   markGreetProduced,
   readRecommendList,
   renderRecommendList,
+  selectRecommendJob,
 } from './recommend.js';
 import type { Page } from 'puppeteer-core';
 
 /** 打招呼前临时拉高父页视口，使 iframe 内更多卡片进入 DOM（与 recommend 列表读取已解耦）。 */
 const RECOMMEND_GREET_EXPAND_HEIGHT_PX = 3000;
 const RECOMMEND_GREET_EXPAND_SETTLE_MS = { min: 600, max: 1400 } as const;
+
+/** 操作完成后等待并关闭延迟出现的提示弹层（如「当前职位尚未开放」）。 */
+const GREET_MODAL_CLEANUP_WAIT_MAX_MS = 4000;
 
 async function assertNoGreetPaywallPopup(page: Page): Promise<void> {
   await sleepRandom(ONLINE_RESUME_IFRAME_APPEAR_MS.min, ONLINE_RESUME_IFRAME_APPEAR_MS.max);
@@ -45,26 +51,49 @@ async function assertNoGreetPaywallPopup(page: Page): Promise<void> {
   }
 }
 
-export async function runRecommendGreet(target: string): Promise<string> {
-  const t = target.trim();
+async function cleanupGreetModalIfPresent(page: Page): Promise<void> {
+  await waitAndCloseBossModalIfPresent(page, GREET_MODAL_CLEANUP_WAIT_MAX_MS);
+}
+
+export type GreetOptions = {
+  candidateTarget: string;
+  jobKeyword?: string;
+};
+
+export async function runRecommendGreet(options: GreetOptions): Promise<string> {
+  const t = options.candidateTarget.trim();
+  const kw = (options.jobKeyword ?? '').trim();
   if (!t) {
     throw new Error('请提供打招呼目标（姓名或序号）。');
   }
   try {
     return await withBossSessionPage(async (page) => {
+      await closeBossModalIfPresent(page);
       const url = page.url();
       if (isBossChatAiFormUrl(url)) {
         await ensureInDeepSearchPage(page);
+        let jobLine = '';
+        if (kw) {
+          const label = await selectAiFormJob(page, kw);
+          await ensureInDeepSearchPage(page);
+          jobLine = `当前岗位：${label}`;
+        }
         const greetResult = await clickGreetDeepSearch(page, t);
         await assertNoGreetPaywallPopup(page);
         await sleepRandom(380, 1000);
         const after = await readDeepSearchGeekList(page);
-        return [greetResult.message, '', '当前深度搜索列表：', renderGeekListSection('深度搜索匹配结果', after)].join(
-          '\n',
-        );
+        await cleanupGreetModalIfPresent(page);
+        const lines = [greetResult.message];
+        if (jobLine) {
+          lines.unshift(jobLine);
+        }
+        lines.push('', '当前深度搜索列表：', renderGeekListSection('深度搜索匹配结果', after));
+        return lines.join('\n');
       }
 
       const frame = await ensureInRecommendPage(page);
+      const selectedJob = await selectRecommendJob(frame, kw);
+      const jobLine = selectedJob ? `当前岗位：${selectedJob}` : '当前岗位：默认';
       const savedViewport = await snapshotBossPageViewport(page);
       try {
         await setTempHeight(page, savedViewport, RECOMMEND_GREET_EXPAND_HEIGHT_PX);
@@ -78,7 +107,8 @@ export async function runRecommendGreet(target: string): Promise<string> {
         await sleepRandom(380, 1000);
         const after = await readRecommendList(frame);
         markGreetProduced(before, after);
-        return [greetResult.message, '', '当前推荐列表（来源分组）：', renderRecommendList(after)].join('\n');
+        await cleanupGreetModalIfPresent(page);
+        return [jobLine, greetResult.message, '', '当前推荐列表（来源分组）：', renderRecommendList(after)].join('\n');
       } finally {
         await resumeHeight(page, savedViewport);
       }

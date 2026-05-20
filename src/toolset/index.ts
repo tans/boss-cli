@@ -89,8 +89,11 @@ export async function implPreview(opts: {
   return runPreview(opts);
 }
 
-export async function implRecommendGreet(target: string): Promise<string> {
-  return runRecommendGreet(target);
+export async function implRecommendGreet(opts: {
+  candidateTarget: string;
+  jobKeyword?: string;
+}): Promise<string> {
+  return runRecommendGreet(opts);
 }
 
 export { implSetBaiduCredentials } from './baidu_credentials.js';

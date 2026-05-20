@@ -3,14 +3,28 @@ import type { Page } from 'puppeteer-core';
 const OVERLAY_ID = '__boss_cli_agent_operating__';
 const STYLE_ID = '__boss_cli_agent_operating_style__';
 
+/** 默认蒙层品牌标识。可通过环境变量 `BOSS_CLI_AGENT_BRAND` 覆盖，便于以 SDK/库形式被其它调用方复用时显示自己的品牌。 */
+const DEFAULT_AGENT_BRAND = 'boss-cli';
+
+function resolveAgentBrand(): string {
+  const raw = process.env.BOSS_CLI_AGENT_BRAND;
+  if (typeof raw !== 'string') {
+    return DEFAULT_AGENT_BRAND;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : DEFAULT_AGENT_BRAND;
+}
+
 /**
  * 全屏半透明彩虹蒙层（呼吸式明暗脉冲），文案视口居中；`pointer-events: none` 不拦截页面点击与自动化操作。
  * 与 {@link hideAgentOperatingIndicator} 成对使用。
+ * 品牌标识取自 `BOSS_CLI_AGENT_BRAND` 环境变量（未设置或为空时使用 `boss-cli`）。
  */
 export async function showAgentOperatingIndicator(page: Page): Promise<void> {
+  const brand = resolveAgentBrand();
   await page.evaluate(
-    (ids: { overlay: string; style: string }) => {
-      const { overlay, style: styleId } = ids;
+    (ids: { overlay: string; style: string; brand: string }) => {
+      const { overlay, style: styleId, brand: brandText } = ids;
       if (document.getElementById(overlay)) {
         return;
       }
@@ -77,7 +91,7 @@ export async function showAgentOperatingIndicator(page: Page): Promise<void> {
 
       const label = document.createElement('div');
       label.className = 'boss-cli-agent-label';
-      label.textContent = 'boss-cli 正在操作您的浏览器 请稍候';
+      label.textContent = `${brandText} 正在操作您的浏览器 请稍候`;
 
       bar.appendChild(label);
 
@@ -85,7 +99,7 @@ export async function showAgentOperatingIndicator(page: Page): Promise<void> {
       root.appendChild(styleEl);
       root.appendChild(bar);
     },
-    { overlay: OVERLAY_ID, style: STYLE_ID },
+    { overlay: OVERLAY_ID, style: STYLE_ID, brand },
   );
 }
 

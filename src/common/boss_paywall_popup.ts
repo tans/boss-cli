@@ -58,6 +58,14 @@ export async function waitForCResumeIframeOrPaywall(
 }
 
 /**
+ * 单次探测：主文档是否当前正显示付费弹层（与 {@link describeBossPaywallPopupIfPresent} 判定一致）。
+ * 供合并轮询（同一循环内同时检测多类弹层）使用，避免重复编写检测脚本。
+ */
+export async function detectBossPaywallPopup(page: Page): Promise<boolean> {
+  return (await page.evaluate(HAS_PAYWALL_SCRIPT)) as boolean;
+}
+
+/**
  * 打招呼等操作后，轮询主文档是否出现付费弹层（与 {@link describeBossPaywallPopupIfPresent} 判定一致）。
  * 命中则返回 true；超时未出现则返回 false。
  */
@@ -67,8 +75,7 @@ export async function waitForBossPaywallPopup(
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const paywall = (await page.evaluate(HAS_PAYWALL_SCRIPT)) as boolean;
-    if (paywall) {
+    if (await detectBossPaywallPopup(page)) {
       return true;
     }
     await sleepRandom(160, 240);

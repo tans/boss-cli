@@ -47,6 +47,24 @@ export function isBossChatIndexUrl(url: string): boolean {
   }
 }
 
+/**
+ * 是否已经位于 Boss 已登录主壳页（pathname 以 `/web/chat/` 开头）。
+ * 当前已知主壳页：`/web/chat/index`、`/web/chat/recommend`、`/web/chat/aiform`、`/web/chat/job/list`。
+ * 它们共享同一套侧栏 `.menu-list`，校验登录态时不必再额外跳回 `/web/chat/index`。
+ */
+export function isBossChatShellUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (!u.hostname.includes('zhipin.com')) {
+      return false;
+    }
+    const p = u.pathname.replace(/\/+$/, '') || '/';
+    return p === '/web/chat' || p.startsWith('/web/chat/');
+  } catch {
+    return false;
+  }
+}
+
 /** 未登录时常见跳转：如 `https://www.zhipin.com/web/user/?ka=bticket` */
 export function isWebUserLoginUrl(url: string): boolean {
   try {

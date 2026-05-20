@@ -3,7 +3,7 @@
  * 再执行 {@link withBossSessionPage} 回调。与 `src/toolset/chat.ts`（按姓名打开会话等业务）无关。
  */
 import type { Browser, Page } from 'puppeteer-core';
-import { BOSS_CHAT_INDEX_URL, isBossChatIndexUrl } from './auth.js';
+import { BOSS_CHAT_INDEX_URL, isBossChatShellUrl } from './auth.js';
 import {
   hideAgentOperatingIndicator,
   showAgentOperatingIndicator,
@@ -83,9 +83,14 @@ async function readMenuListSnapshot(page: Page): Promise<MenuListSnapshot> {
   })()`)) as MenuListSnapshot;
 }
 
-/** 先按 URL 判断：非 `/web/chat/index` 则进入沟通页，再交由 {@link ensureMenuListStableAfterLoad} 查 `.menu-list` */
-async function ensureBossChatIndexUrlBeforeMenuList(page: Page): Promise<void> {
-  if (isBossChatIndexUrl(page.url())) {
+/**
+ * 先按 URL 判断：不在 Boss 已登录主壳页（`/web/chat/*`）时跳到沟通页 `/web/chat/index`，
+ * 再交由 {@link ensureMenuListStableAfterLoad} 查 `.menu-list`。
+ * 已经在 `/web/chat/recommend`、`/web/chat/aiform` 等主壳子页时直接跳过 goto，
+ * 避免触发"先回到聊天页再切回业务页"的额外跳转。
+ */
+async function ensureBossChatShellUrlBeforeMenuList(page: Page): Promise<void> {
+  if (isBossChatShellUrl(page.url())) {
     return;
   }
   await page.goto(BOSS_CHAT_INDEX_URL, { waitUntil: 'load', timeout: 60_000 });
@@ -138,7 +143,8 @@ async function ensureMenuListStableAfterLoad(page: Page): Promise<void> {
 
 /**
  * 在已连接浏览器、且当前页为 Boss 已登录主壳（含侧栏 `.menu-list` 稳定）的前提下执行回调。
- * 会先按 URL 确保落在沟通页 `/web/chat/index`，再校验侧栏；回调内可再导航到职位/推荐等业务路由。
+ * 会先按 URL 确保落在 `/web/chat/*` 主壳页（已在主壳子页则保留原路径，否则跳回沟通页 `/web/chat/index`），
+ * 再校验侧栏；回调内可再导航到职位/推荐等业务路由。
  */
 export async function withBossSessionPage<T>(callback: (page: Page) => Promise<T>): Promise<T> {
   const isContextDestroyed = (e: unknown): boolean => {
@@ -169,7 +175,7 @@ export async function withBossSessionPage<T>(callback: (page: Page) => Promise<T
 
       await installBossPageGuards(page);
 
-      await ensureBossChatIndexUrlBeforeMenuList(page);
+      await ensureBossChatShellUrlBeforeMenuList(page);
       if (SHOULD_DISABLE_JS) {
         await page.setJavaScriptEnabled(false);
       }

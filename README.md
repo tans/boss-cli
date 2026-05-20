@@ -1,36 +1,38 @@
-# boss-cli · Boss直聘 终端自动化 CLI
-
-> **关键词**：boss-cli · Boss直聘自动化 · Boss直聘 CLI · Boss直聘 Agent · 招聘自动化 · HR自动化 · Puppeteer Boss直聘 · boss-direct 自动化 · 终端招聘工具
+# boss-cli — Boss直聘自动化命令行工具
 
 [![npm version](https://img.shields.io/npm/v/@joohw/boss-cli)](https://www.npmjs.com/package/@joohw/boss-cli)
 [![npm downloads](https://img.shields.io/npm/dm/@joohw/boss-cli)](https://www.npmjs.com/package/@joohw/boss-cli)
 [![license](https://img.shields.io/github/license/joohw/boss-cli)](./LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/joohw/boss-cli)](https://github.com/joohw/boss-cli)
 
-**boss-cli** 是一个把 Boss 直聘沟通页搬进终端的自动化命令行工具。支持**登录**、**候选人列表**、**打开会话**、**发送消息**、**打招呼**、**深度搜索**等操作，基于 Puppeteer / CDP 驱动本机 Chrome，可作为独立 CLI 使用，也可由 AI Agent（如 Claude、GPT）通过子进程调用，实现全自动化招聘流水线。
-
-> 本仓库是**纯 CLI**（不内置对话式 Agent），适合脚本或外层 AI Agent 编排。想让 Agent 帮你做 HR？接上任何支持工具调用的 LLM 即可。
+**boss-cli** 是开源的 Boss直聘自动化 CLI 工具，基于 Puppeteer / CDP 驱动本机 Chrome，把 Boss直聘沟通页的核心操作全部搬进终端。支持**候选人列表**、**批量发消息**、**自动打招呼**、**简历获取**、**深度搜索**等，可独立使用，也可作为 AI Agent 的子进程工具，实现全自动化招聘流水线。
 
 ```bash
 npm install -g @joohw/boss-cli@latest
 boss help
 ```
 
+> 本仓库是**纯 CLI**，不内置对话式 Agent。接上任何支持工具调用的 LLM（Claude、GPT、Gemini 等），即可让 AI 代替 HR 完成 Boss直聘日常操作。
+
 ---
 
-## 为什么用 boss-cli？
+## 为什么选择 boss-cli？
 
-- **Boss直聘自动化**：无需手动打开网页，在终端完成候选人沟通、打招呼、发简历等全流程
-- **AI Agent 友好**：每条命令输出结构清晰，Claude / GPT 等 Agent 可直接解析并编排多步招聘流程
-- **无侵入**：使用本机 Chrome，Cookie 落在本地，不经过任何第三方服务器
-- **轻量**：纯 CLI，不依赖 Electron，不捆绑浏览器，开箱即用
+| 需求 | boss-cli 的解法 |
+| --- | --- |
+| Boss直聘批量发消息 | `boss send` 向当前会话发送任意文本，配合脚本循环即可批量 |
+| Boss直聘自动打招呼 | `boss greet <序号>` 对推荐候选人一键打招呼 |
+| Boss直聘候选人筛选 | `boss list` 读取全部聊天列表，`--unread` 过滤未读 |
+| Boss直聘脚本/爬虫 | 使用本机 Chrome + CDP，无需 Selenium，反检测能力更强 |
+| HR 工作 AI 自动化 | 每条命令输出纯文本，AI Agent 可直接解析并编排多步流程 |
+| 无侵入、数据本地 | Cookie 和缓存仅落在 `~/.boss-cli/`，不经过任何第三方服务器 |
 
 ---
 
 ## 依赖
 
 - Node.js **≥ 20**
-- 本机 **Chrome / Chromium**（由 Puppeteer 通过 CDP 连接，不随包下载）
+- 本机 **Chrome / Chromium**（通过 CDP 连接，不随包下载）
 
 ---
 
@@ -75,7 +77,7 @@ npm run build
 | `boss` | 交互模式（REPL） |
 | `boss help` | 打印帮助 |
 | `boss version` / `ver` / `-v` / `--version` | 显示版本并检查 npm 是否有更新 |
-| `boss login` | 打开登录页（需手动完成扫码/验证） |
+| `boss login` | 打开 Boss直聘 登录页（需手动完成扫码/验证） |
 | `boss list [--unread]` | 读取「全部」聊天列表候选人；`--unread` 仅显示未读 |
 | `boss chat <姓名> [--strict]` | 打开指定联系人会话；默认模糊匹配，`--strict` 精确匹配 |
 | `boss action <操作> [--remark <备注>]` | 在当前会话执行操作（见下） |
@@ -86,7 +88,7 @@ npm run build
 | `boss recommend [岗位关键字]` | 进入推荐页读取推荐候选人列表 |
 | `boss greet <姓名或序号>` | 对推荐候选人点击「打招呼」（有次数限制，请谨慎） |
 
-**`action` 可用操作**：`resume`、`not-fit`、`remark`、`agree-resume`、`history`、`exchange-wechat`。操作为 `remark` 时需附加 `--remark <备注>`。
+**`action` 可用操作**：`resume`（索要简历）、`not-fit`（不合适）、`remark`（备注，需 `--remark <内容>`）、`agree-resume`（同意查看简历）、`history`（查看沟通记录）、`exchange-wechat`（交换微信）。
 
 ### 交互模式
 
@@ -98,8 +100,10 @@ npm run build
 
 ## 典型使用场景
 
+### 日常招聘流程自动化
+
 ```bash
-# 1. 登录
+# 1. 登录 Boss直聘
 boss login
 
 # 2. 查看未读候选人
@@ -108,25 +112,51 @@ boss list --unread
 # 3. 打开某位候选人会话
 boss chat 张三
 
-# 4. 发送消息
-boss send --text "您好，请问方便加微信进一步沟通吗？"
+# 4. 发送消息（Boss直聘批量发消息场景）
+boss send --text "您好，我们正在招聘前端工程师，请问方便发一下简历吗？"
 
-# 5. 查看推荐候选人并打招呼
+# 5. 索要简历
+boss action resume
+```
+
+### 推荐候选人自动打招呼
+
+```bash
+# 查看前端工程师推荐列表
 boss recommend 前端工程师
+
+# 对第 1 位候选人打招呼（Boss直聘自动打招呼）
 boss greet 1
+```
+
+### 职位管理与深度搜索
+
+```bash
+# 查看所有职位
+boss positions
+
+# 缓存职位 JD（方便 Agent 读取）
+boss jd 前端工程师
+
+# 触发深度搜索立即匹配
+boss deep-search 前端工程师
 ```
 
 ---
 
 ## 与 AI Agent 集成
 
-boss-cli 的每条命令都以纯文本输出结构化结果，天然适合 AI Agent 编排：
+boss-cli 的每条命令输出纯文本结构化结果，天然适合 Claude、GPT、Gemini 等 LLM 通过子进程调用，构建**全自动化招聘 Agent**：
 
 ```
-# 让 Claude / GPT 等 Agent 调用 boss-cli 子进程
-boss list --unread   # → 输出候选人列表，Agent 解析后决策
-boss chat <姓名>      # → 打开会话
-boss send -t "..."   # → 发送消息
+# Agent 编排示例（伪代码）
+1. 运行 boss list --unread  → 获取未读候选人列表
+2. 对每位候选人：
+   - boss chat <姓名>        → 打开会话
+   - boss action resume      → 索要简历
+   - boss send -t "..."      → 发送个性化消息
+3. 运行 boss recommend       → 读取推荐候选人
+4. boss greet <序号>         → 批量打招呼
 ```
 
 详见仓库内 [AGENTS.md](./AGENTS.md)。
@@ -145,7 +175,7 @@ boss send -t "..."   # → 发送消息
 ## Headless / Headful
 
 - 默认 **headful**（显示浏览器窗口），便于扫码登录和调试
-- 无头运行：设置环境变量 `BOSS_BROWSER_HEADLESS=true`
+- 无头运行（适合服务器/CI）：设置环境变量 `BOSS_BROWSER_HEADLESS=true`
 
 ```bash
 # macOS / Linux
@@ -177,3 +207,7 @@ $env:BOSS_BROWSER_HEADLESS="true"
 - npm：[@joohw/boss-cli](https://www.npmjs.com/package/@joohw/boss-cli)
 - GitHub：[joohw/boss-cli](https://github.com/joohw/boss-cli)
 - 问题反馈：[Issues](https://github.com/joohw/boss-cli/issues)
+
+---
+
+<!-- SEO keywords: boss-cli Boss直聘自动化 Boss直聘CLI Boss直聘脚本 Boss直聘爬虫 Boss直聘批量发消息 Boss直聘自动打招呼 招聘自动化工具 HR自动化 Boss直聘Agent AI招聘助手 Puppeteer Boss直聘 候选人管理自动化 boss direct 自动化 bosszp 自动化 -->

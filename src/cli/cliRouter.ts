@@ -157,8 +157,9 @@ function printHelp(): void {
   boss preview <姓名|序号> [--job <岗位关键字>]
       在线简历预览：须当前已在「推荐」(/web/chat/recommend) 或「深度搜索」(/web/chat/aiform) 且列表已加载；不会自动跳转
       注意：平台对在线简历每日可查看次数有限，请按需使用、谨慎查看
-  boss greet <姓名|序号>
+  boss greet <姓名|序号> [--job <岗位关键字>]
       在「推荐」页（或当前已在 Boss 聊天侧栏打开的、含候选人列表的页面）对列表中的候选人点击“打招呼”
+      可选 --job 先在岗位下拉中模糊匹配并切换（与 recommend / preview 共用同一套选择逻辑）
       须先在对应页加载出候选人列表
       会消耗打招呼次数且单次成本较高，请谨慎使用
   boss deep-search [岗位关键字]（别名 deepsearch）
@@ -406,14 +407,19 @@ export async function executeCommand(argv: string[]): Promise<string> {
 
   if (cmd === 'greet') {
     const { rest, opts, flags } = parseOpts(tail);
-    if (Object.keys(opts).length > 0 || flags.size > 0) {
-      die('❌ 用法: greet <姓名|序号>');
+    if (flags.size > 0) {
+      die('❌ 用法: greet <姓名|序号> [--job <岗位关键字>]');
+    }
+    const jobKeyword = opts.job?.trim();
+    const extraOpts = Object.keys(opts).filter((k) => k !== 'job');
+    if (extraOpts.length > 0) {
+      die('❌ 用法: greet <姓名|序号> [--job <岗位关键字>]');
     }
     const target = rest.join(' ').trim();
     if (!target) {
-      die('❌ 用法: greet <姓名|序号>');
+      die('❌ 用法: greet <姓名|序号> [--job <岗位关键字>]');
     }
-    return implRecommendGreet(target);
+    return implRecommendGreet({ candidateTarget: target, jobKeyword: jobKeyword || undefined });
   }
 
   die(`❌ 未知命令 “${argv[0]}”。输入 help 查看用法。`);
