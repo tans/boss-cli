@@ -1,7 +1,8 @@
 import type { Metadata } from 'next'
+import { SITE_URL } from '@/lib/site'
 import './globals.css'
 
-const siteUrl = 'https://github.com/joohw/boss-cli'
+const siteUrl = SITE_URL
 const title = 'boss-cli — Boss直聘自动化招聘工具'
 const description =
   '专为 HR 和招聘团队打造的开源命令行工具。自动化候选人管理、批量发送消息、智能筛选简历，大幅提升招聘效率。支持 AI Agent 集成，一行命令搞定重复操作。'
