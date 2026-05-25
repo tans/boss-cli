@@ -1,5 +1,6 @@
 # Build stage
-FROM node:20-alpine AS builder
+ARG NODE_IMAGE=docker.m.daocloud.io/library/node:20-alpine
+FROM ${NODE_IMAGE} AS builder
 
 WORKDIR /app
 
@@ -16,7 +17,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM node:20-alpine
+FROM ${NODE_IMAGE}
 
 WORKDIR /app
 
