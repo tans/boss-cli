@@ -109,7 +109,7 @@ jobs:
         if: ${{ steps.npm_gate.outputs.publish == 'true' && steps.npm_version.outputs.exists != 'true' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+        run: npm publish --access public
 
       - name: Verify published version
         if: ${{ steps.npm_gate.outputs.publish == 'true' }}
