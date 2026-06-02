@@ -9,7 +9,6 @@ import {
   sleepRandom,
   snapshotBossPageViewport,
 } from '../browser/index.js';
-import { createWaitManualLoginRequiredText } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import {
   closeBossPaywallPopupIfPresent,
@@ -128,9 +127,6 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (e instanceof Error && e.message.includes('浏览器会话尚未初始化')) {
-      throw new Error(createWaitManualLoginRequiredText('简历预览截图'));
-    }
     throw new Error(`简历预览失败：${message}`);
   }
 }

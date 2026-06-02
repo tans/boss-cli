@@ -2,10 +2,8 @@ import type { Page } from 'puppeteer-core';
 import {
   CHAT_HISTORY_DIALOG_WAIT_MS,
   CHAT_HISTORY_TAB_SWITCH_MS,
-  MOUSE_CLICK_PRESS_MS,
   OPEN_CHAT_AFTER_ROW_CLICK_MS,
   OPEN_CHAT_SCROLL_GAP_MS,
-  randomIntInclusive,
   sleepRandom,
 } from '../browser/index.js';
 import { isBossChatIndexUrl } from '../common/auth.js';
@@ -31,37 +29,37 @@ function chatRoleTag(from: ChatFrom): string {
  * 未找到入口时返回 null（视为暂无同事沟通记录，不输出该段）。
  */
 async function fetchColleagueChatHistorySection(page: Page): Promise<string | null> {
-  const clicked = await page.evaluate(() => {
-    function norm(v: string | null | undefined) {
-      return (v ?? '').replace(/\s+/g, ' ').trim();
+  const clicked = (await page.evaluate(`(() => {
+    function norm(v) {
+      return (v ?? "").replace(/\\s+/g, " ").trim();
     }
-    const tooltips = Array.from(document.querySelectorAll('.chat-tooltip-custom'));
+    const tooltips = Array.from(document.querySelectorAll(".chat-tooltip-custom"));
     for (const el of tooltips) {
-      if (!norm(el.textContent).includes('沟通记录')) continue;
-      const host = el.closest('span.icon') ?? el.closest('span') ?? el.parentElement;
+      if (!norm(el.textContent).includes("沟通记录")) continue;
+      const host = el.closest("span.icon") ?? el.closest("span") ?? el.parentElement;
       if (host) {
-        (host as HTMLElement).click();
+        host.click();
         return true;
       }
-      (el as HTMLElement).click();
+      el.click();
       return true;
     }
-    const uses = Array.from(document.querySelectorAll('use'));
+    const uses = Array.from(document.querySelectorAll("use"));
     for (const u of uses) {
       const h =
-        u.getAttribute('href') ||
-        u.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ||
-        '';
-      if (h.includes('icon-chat-history')) {
-        const p = u.closest('span.icon') ?? u.parentElement?.parentElement;
+        u.getAttribute("href") ||
+        u.getAttributeNS("http://www.w3.org/1999/xlink", "href") ||
+        "";
+      if (h.includes("icon-chat-history")) {
+        const p = u.closest("span.icon") ?? u.parentElement?.parentElement;
         if (p) {
-          (p as HTMLElement).click();
+          p.click();
           return true;
         }
       }
     }
     return false;
-  });
+  })()`)) as boolean;
 
   if (!clicked) {
     return null;
@@ -76,33 +74,36 @@ async function fetchColleagueChatHistorySection(page: Page): Promise<string | nu
   await sleepRandom(CHAT_HISTORY_DIALOG_WAIT_MS.min, CHAT_HISTORY_DIALOG_WAIT_MS.max);
 
   const scrapeRows = () =>
-    page.evaluate(() => {
-      function norm(v: string | null | undefined) {
-        return (v ?? '').replace(/\s+/g, ' ').trim();
+    page.evaluate(`(() => {
+      function norm(v) {
+        return (v ?? "").replace(/\\s+/g, " ").trim();
       }
-      const root = document.querySelector('.chat-history-process');
-      if (!root) return [] as Array<{ action: string; operat: string }>;
-      return Array.from(root.querySelectorAll('.record li'))
+      const root = document.querySelector(".chat-history-process");
+      if (!root) return [];
+      return Array.from(root.querySelectorAll(".record li"))
         .map((li) => ({
-          action: norm(li.querySelector('.action')?.textContent),
-          operat: norm(li.querySelector('.operat')?.textContent),
+          action: norm(li.querySelector(".action")?.textContent),
+          operat: norm(li.querySelector(".operat")?.textContent),
         }))
         .filter((x) => x.action || x.operat);
-    });
+    })()`) as Promise<Array<{ action: string; operat: string }>>;
 
   const clickTab = (label: string) =>
-    page.evaluate((lab: string) => {
-      function norm(v: string | null | undefined) {
-        return (v ?? '').replace(/\s+/g, ' ').trim();
-      }
-      const root = document.querySelector('.chat-history-process');
-      if (!root) return;
-      const spans = Array.from(root.querySelectorAll('.tab-hd span'));
-      const sp = spans.find((s) => norm(s.textContent) === lab);
-      if (sp && !sp.classList.contains('selected')) {
-        (sp as HTMLElement).click();
-      }
-    }, label);
+    page.evaluate(
+      `((lab) => {
+        function norm(v) {
+          return (v ?? "").replace(/\\s+/g, " ").trim();
+        }
+        const root = document.querySelector(".chat-history-process");
+        if (!root) return;
+        const spans = Array.from(root.querySelectorAll(".tab-hd span"));
+        const sp = spans.find((s) => norm(s.textContent) === lab);
+        if (sp && !sp.classList.contains("selected")) {
+          sp.click();
+        }
+      })`,
+      label,
+    );
 
   await clickTab('同事沟通');
   await sleepRandom(CHAT_HISTORY_TAB_SWITCH_MS.min, CHAT_HISTORY_TAB_SWITCH_MS.max);
@@ -146,11 +147,7 @@ export async function runGetCommunicationHistory(page: Page): Promise<string> {
   }
 
   let historyBlock: string | null = null;
-  try {
-    historyBlock = await fetchColleagueChatHistorySection(page);
-  } catch {
-    historyBlock = null;
-  }
+  historyBlock = await fetchColleagueChatHistorySection(page);
   if (historyBlock === null) {
     return '未找到「沟通记录」入口，或当前候选人暂无可读取记录。';
   }
@@ -173,30 +170,31 @@ async function closeChatHistoryPopup(page: Page): Promise<void> {
     if (btn) {
       await btn.click();
     } else {
-      await page.evaluate(() => {
+      await page.evaluate(`(() => {
         const root =
-          document.querySelector('.boss-popup__wrapper.chat-history') ||
-          document.querySelector('.boss-dialog__wrapper.chat-history');
-        const c = root?.querySelector('.boss-popup__close') ?? document.querySelector('.boss-popup__close');
+          document.querySelector(".boss-popup__wrapper.chat-history") ||
+          document.querySelector(".boss-dialog__wrapper.chat-history");
+        const c = root?.querySelector(".boss-popup__close") ?? document.querySelector(".boss-popup__close");
         if (c) {
-          (c as HTMLElement).click();
+          c.click();
         }
-      });
+      })()`);
     }
     await sleepRandom(250, 550);
     const popupWrap = await page.$('.boss-popup__wrapper.chat-history');
     if (popupWrap) {
-      await page.evaluate(() => {
+      await page.evaluate(`(() => {
         const root =
-          document.querySelector('.boss-popup__wrapper.chat-history') ||
-          document.querySelector('.boss-dialog__wrapper.chat-history');
-        const c = root?.querySelector('.boss-popup__close') ?? document.querySelector('.boss-popup__close');
-        (c as HTMLElement | null)?.click();
-      });
+          document.querySelector(".boss-popup__wrapper.chat-history") ||
+          document.querySelector(".boss-dialog__wrapper.chat-history");
+        const c = root?.querySelector(".boss-popup__close") ?? document.querySelector(".boss-popup__close");
+        c?.click();
+      })()`);
       await sleepRandom(150, 350);
     }
-  } catch {
-    /* ignore */
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`关闭「沟通记录」弹层失败：${msg}`);
   }
 }
 
@@ -319,27 +317,15 @@ export async function runOpenCandidateChat(
       throw new Error(`未在聊天列表中找到候选人：${targetName}`);
     }
 
-    try {
-      await targetWrap.evaluate((el) => {
-        const row = el.querySelector<HTMLElement>('.geek-item') ?? (el as HTMLElement);
-        row.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' });
-        row.click();
-      });
-    } catch {
-      const box = await targetWrap.boundingBox();
-      if (!box) {
-        throw new Error(`已定位候选人 ${foundName}，但元素不可点击。`);
-      }
-      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, {
-        delay: randomIntInclusive(MOUSE_CLICK_PRESS_MS.min, MOUSE_CLICK_PRESS_MS.max),
-      });
-    }
+    await targetWrap.evaluate(`((el) => {
+      const row = el.querySelector(".geek-item") ?? el;
+      row.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
+      row.click();
+    })`);
 
     await sleepRandom(OPEN_CHAT_AFTER_ROW_CLICK_MS.min, OPEN_CHAT_AFTER_ROW_CLICK_MS.max);
 
-    const selected = await targetWrap
-      .$eval('.geek-item', (el) => el.classList.contains('selected'))
-      .catch(() => false);
+    const selected = await targetWrap.$eval('.geek-item', (el) => el.classList.contains('selected'));
 
     try {
       await page.waitForSelector('.base-info-single-container', { timeout: 12_000 });
@@ -381,69 +367,65 @@ export async function runOpenCandidateChat(
       text: string;
     }> = [];
     let hasFriendResumeAttachment = false;
-    try {
-      const scraped = (await page.evaluate(`(() => {
-        const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
-        /** Boss 系统里的「消息优先提醒」增值服务条，对业务无意义，过滤掉 */
-        function isBossPriorityUpsellSystemText(text) {
-          return norm(text).indexOf("优先提醒") !== -1;
+    const scraped = (await page.evaluate(`(() => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+      /** Boss 系统里的「消息优先提醒」增值服务条，对业务无意义，过滤掉 */
+      function isBossPriorityUpsellSystemText(text) {
+        return norm(text).indexOf("优先提醒") !== -1;
+      }
+      const items = Array.from(document.querySelectorAll(".chat-message-list .message-item"));
+      let currentTime = "";
+      const messages = [];
+      let hasFriendResumeAttachment = false;
+      for (const item of items) {
+        const timeNode = item.querySelector(".message-time .time");
+        if (timeNode) {
+          const t = norm(timeNode.textContent);
+          if (t) currentTime = t;
         }
-        const items = Array.from(document.querySelectorAll(".chat-message-list .message-item"));
-        let currentTime = "";
-        const messages = [];
-        let hasFriendResumeAttachment = false;
-        for (const item of items) {
-          const timeNode = item.querySelector(".message-time .time");
-          if (timeNode) {
-            const t = norm(timeNode.textContent);
-            if (t) currentTime = t;
-          }
-          const friendRoot = item.querySelector(".item-friend");
-          let friendText = "";
-          if (friendRoot) {
-            friendText = norm(friendRoot.querySelector(".text > span")?.textContent);
-            if (!friendText) {
-              const resumeIcon = friendRoot.querySelector(".resume-icon");
-              const title = norm(friendRoot.querySelector(".message-card-top-title")?.textContent);
-              const cardBtn = norm(friendRoot.querySelector(".message-card-buttons .card-btn")?.textContent);
-              if (resumeIcon) hasFriendResumeAttachment = true;
-              if (title || cardBtn) {
-                const parts = [];
-                if (title) parts.push(title);
-                if (cardBtn) parts.push(cardBtn);
-                friendText = parts.length ? parts.join(" · ") : "";
-              }
-              if (!friendText) friendText = norm(friendRoot.querySelector(".text")?.textContent);
+        const friendRoot = item.querySelector(".item-friend");
+        let friendText = "";
+        if (friendRoot) {
+          friendText = norm(friendRoot.querySelector(".text > span")?.textContent);
+          if (!friendText) {
+            const resumeIcon = friendRoot.querySelector(".resume-icon");
+            const title = norm(friendRoot.querySelector(".message-card-top-title")?.textContent);
+            const cardBtn = norm(friendRoot.querySelector(".message-card-buttons .card-btn")?.textContent);
+            if (resumeIcon) hasFriendResumeAttachment = true;
+            if (title || cardBtn) {
+              const parts = [];
+              if (title) parts.push(title);
+              if (cardBtn) parts.push(cardBtn);
+              friendText = parts.length ? parts.join(" · ") : "";
             }
-          }
-          const myselfText = norm(item.querySelector(".item-myself .text span")?.textContent);
-          const systemText =
-            norm(item.querySelector(".item-system .message-card-top-title")?.textContent) ||
-            norm(item.querySelector(".item-system .text span")?.textContent);
-          if (friendText) {
-            messages.push({ text: friendText, time: currentTime, from: "friend" });
-          } else if (myselfText) {
-            messages.push({ text: myselfText, time: currentTime, from: "myself" });
-          } else if (systemText) {
-            if (!isBossPriorityUpsellSystemText(systemText)) {
-              messages.push({ text: systemText, time: currentTime, from: "system" });
-            }
+            if (!friendText) friendText = norm(friendRoot.querySelector(".text")?.textContent);
           }
         }
-        return { messages, hasFriendResumeAttachment };
-      })()`)) as {
-        messages: Array<{
-          time: string;
-          from: 'friend' | 'myself' | 'system' | 'unknown';
-          text: string;
-        }>;
-        hasFriendResumeAttachment: boolean;
-      };
-      fullMessages = scraped.messages;
-      hasFriendResumeAttachment = scraped.hasFriendResumeAttachment;
-    } catch {
-      /* 抓取消息失败时仍返回摘要，不刷屏 stderr */
-    }
+        const myselfText = norm(item.querySelector(".item-myself .text span")?.textContent);
+        const systemText =
+          norm(item.querySelector(".item-system .message-card-top-title")?.textContent) ||
+          norm(item.querySelector(".item-system .text span")?.textContent);
+        if (friendText) {
+          messages.push({ text: friendText, time: currentTime, from: "friend" });
+        } else if (myselfText) {
+          messages.push({ text: myselfText, time: currentTime, from: "myself" });
+        } else if (systemText) {
+          if (!isBossPriorityUpsellSystemText(systemText)) {
+            messages.push({ text: systemText, time: currentTime, from: "system" });
+          }
+        }
+      }
+      return { messages, hasFriendResumeAttachment };
+    })()`)) as {
+      messages: Array<{
+        time: string;
+        from: 'friend' | 'myself' | 'system' | 'unknown';
+        text: string;
+      }>;
+      hasFriendResumeAttachment: boolean;
+    };
+    fullMessages = scraped.messages;
+    hasFriendResumeAttachment = scraped.hasFriendResumeAttachment;
 
     const detailLines = fullMessages.map((m) => {
       const tag = chatRoleTag(m.from);

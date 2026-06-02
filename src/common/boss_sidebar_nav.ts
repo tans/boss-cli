@@ -11,24 +11,24 @@ export async function clickBossSidebarMenuToPath(
   targetPath: string,
 ): Promise<void> {
   const clicked = (await page.evaluate(
-    ({ label, path }) => {
-      const norm = (v: string | null | undefined) => (v ?? '').replace(/\s+/g, '');
-      const links = Array.from(document.querySelectorAll('.menu-list a'));
+    `(({ label, path }) => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, "");
+      const links = Array.from(document.querySelectorAll(".menu-list a"));
       const target = links.find((a) => {
-        const href = a.getAttribute('href') ?? '';
+        const href = a.getAttribute("href") ?? "";
         if (href.includes(path)) {
           return true;
         }
-        const text = norm(a.querySelector('.menu-item-content span')?.textContent ?? a.textContent);
+        const text = norm(a.querySelector(".menu-item-content span")?.textContent ?? a.textContent);
         return text.includes(label);
       });
       if (!(target instanceof HTMLElement)) {
         return false;
       }
-      target.scrollIntoView({ block: 'center', inline: 'nearest' });
+      target.scrollIntoView({ block: "center", inline: "nearest" });
       target.click();
       return true;
-    },
+    })`,
     { label: menuLabel, path: targetPath },
   )) as boolean;
 
@@ -37,14 +37,14 @@ export async function clickBossSidebarMenuToPath(
   }
 
   await page.waitForFunction(
-    (path) => {
+    `((path) => {
       try {
-        const p = window.location.pathname.replace(/\/+$/, '') || '/';
+        const p = window.location.pathname.replace(/\\/+$/, "") || "/";
         return p === path;
       } catch {
         return false;
       }
-    },
+    })`,
     { timeout: SIDEBAR_NAV_WAIT_MS },
     targetPath,
   );

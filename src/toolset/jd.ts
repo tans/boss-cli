@@ -1,7 +1,6 @@
 import { access, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { sleepRandom } from '../browser/index.js';
-import { createWaitManualLoginRequiredText } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { clickBossSidebarMenuToPath } from '../common/boss_sidebar_nav.js';
 import { JD_DIR } from '../config.js';
@@ -491,9 +490,6 @@ export async function runListOpenPositions(
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (e instanceof Error && e.message.includes('浏览器会话尚未初始化')) {
-      throw new Error(createWaitManualLoginRequiredText('获取岗位列表'));
-    }
     console.error(`[boss-cli] list_open_positions error: ${message}`);
     throw new Error(`获取岗位列表失败：${message}`);
   }

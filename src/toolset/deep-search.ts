@@ -1,7 +1,6 @@
 import process from 'node:process';
 import type { Page } from 'puppeteer-core';
-import { sleepRandom } from '../browser/index.js';
-import { createWaitManualLoginRequiredText } from '../common/auth.js';
+import { selectAllModifierKey, sleepRandom } from '../browser/index.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { clickBossSidebarMenuToPath } from '../common/boss_sidebar_nav.js';
 
@@ -712,7 +711,7 @@ async function fillRowAtIndexInSection(
     await sleepRandom(60, 100);
   }
 
-  const selectAllMod = process.platform === 'darwin' ? 'Meta' : 'Control';
+  const selectAllMod = selectAllModifierKey();
   await page.keyboard.down(selectAllMod);
   await page.keyboard.press('KeyA');
   await page.keyboard.up(selectAllMod);
@@ -1152,9 +1151,6 @@ export async function runBossSearchSet(opts: {
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (e instanceof Error && e.message.includes('浏览器会话尚未初始化')) {
-      throw new Error(createWaitManualLoginRequiredText('设置深度搜索条件'));
-    }
     console.error(`[boss-cli] boss_search_set error: ${message}`);
     throw new Error(`设置深度搜索条件失败：${message}`);
   }
@@ -1189,9 +1185,6 @@ export async function runBossSearch(opts: { jobKeyword?: string } = {}): Promise
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (e instanceof Error && e.message.includes('浏览器会话尚未初始化')) {
-      throw new Error(createWaitManualLoginRequiredText('读取深度搜索列表'));
-    }
     console.error(`[boss-cli] boss_search error: ${message}`);
     throw new Error(`读取深度搜索列表失败：${message}`);
   }

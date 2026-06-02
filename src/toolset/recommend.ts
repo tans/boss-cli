@@ -1,6 +1,5 @@
 import type { Frame, Page } from 'puppeteer-core';
 import { sleepRandom } from '../browser/index.js';
-import { createWaitManualLoginRequiredText } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { clickBossSidebarMenuToPath } from '../common/boss_sidebar_nav.js';
 
@@ -435,9 +434,6 @@ export async function runRecommend(jobKeyword?: string): Promise<string> {
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (e instanceof Error && e.message.includes('浏览器会话尚未初始化')) {
-      throw new Error(createWaitManualLoginRequiredText('查看推荐列表'));
-    }
     throw new Error(`读取推荐列表失败：${message}`);
   }
 }

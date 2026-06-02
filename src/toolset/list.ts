@@ -6,7 +6,7 @@ import {
   LIST_POLL_MS,
   sleepRandom,
 } from '../browser/index.js';
-import { createWaitManualLoginRequiredText, isBossChatIndexUrl } from '../common/auth.js';
+import { isBossChatIndexUrl } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { clickBossSidebarMenuToPath } from '../common/boss_sidebar_nav.js';
 
@@ -158,13 +158,9 @@ export async function runGetCandidateList(
         .join('\n');
     });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
     if (e instanceof Error) {
-      if (e.message.includes('浏览器会话尚未初始化')) {
-        throw new Error(createWaitManualLoginRequiredText('获取候选人列表'));
-      }
       throw e;
     }
-    throw new Error(`获取候选人列表失败：${message}`);
+    throw new Error(`获取候选人列表失败：${String(e)}`);
   }
 }

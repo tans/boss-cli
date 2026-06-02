@@ -4,6 +4,7 @@ import {
   ONLINE_RESUME_IFRAME_APPEAR_MS,
   ONLINE_RESUME_IFRAME_SETTLE_MS,
   ONLINE_RESUME_IFRAME_WAIT_MAX_MS,
+  selectAllModifierKey,
   sleepRandom,
   snapshotBossPageViewport,
 } from '../browser/index.js';
@@ -327,7 +328,7 @@ async function updateCandidateRemark(page: Page, remarkText: string): Promise<st
     host.scrollIntoView({ block: "center", inline: "nearest" });
     host.click();
     const wrap = popover.querySelector(".popover-wrap.rightbar-more-tooltip");
-    return !!wrap && isVisible(wrap) || !!wrap;
+    return !!wrap && isVisible(wrap);
   })()`)) as boolean;
   if (!openedMoreMenu) {
     throw new Error('未找到右侧“更多”按钮（rightbar-more），无法打开备注菜单。');
@@ -373,9 +374,10 @@ async function updateCandidateRemark(page: Page, remarkText: string): Promise<st
 
   await page.click(textareaSel);
   await sleepRandom(80, 180);
-  await page.keyboard.down('Control');
+  const selectAllMod = selectAllModifierKey();
+  await page.keyboard.down(selectAllMod);
   await page.keyboard.press('KeyA');
-  await page.keyboard.up('Control');
+  await page.keyboard.up(selectAllMod);
   await sleepRandom(50, 140);
   await page.keyboard.press('Backspace');
   await sleepRandom(120, 260);

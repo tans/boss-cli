@@ -1,12 +1,13 @@
 import {
   randomIntInclusive,
+  selectAllModifierKey,
   SEND_AFTER_ENTER_MS,
   SEND_INPUT_CLICK_MS,
   SEND_TYPING_GAP_MS,
   sleepRandom,
   typeTextWithRandomKeyDelay,
 } from '../browser/index.js';
-import { createWaitManualLoginRequiredText, isBossChatIndexUrl } from '../common/auth.js';
+import { isBossChatIndexUrl } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { runRequestAttachmentResume } from './action.js';
 
@@ -41,9 +42,10 @@ export async function runSendChatMessage(options: SendChatMessageOptions): Promi
         delay: randomIntInclusive(SEND_INPUT_CLICK_MS.min, SEND_INPUT_CLICK_MS.max),
       });
       await sleepRandom(60, 220, signal);
-      await page.keyboard.down('Control');
+      const selectAllMod = selectAllModifierKey();
+      await page.keyboard.down(selectAllMod);
       await page.keyboard.press('KeyA');
-      await page.keyboard.up('Control');
+      await page.keyboard.up(selectAllMod);
       await sleepRandom(45, 180, signal);
       await page.keyboard.press('Backspace');
       await sleepRandom(80, 260, signal);
@@ -67,13 +69,9 @@ export async function runSendChatMessage(options: SendChatMessageOptions): Promi
       return `已发送消息：${messageText}\n${resumeResult}`;
     });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
     if (e instanceof Error) {
-      if (e.message.includes('浏览器会话尚未初始化')) {
-        throw new Error(createWaitManualLoginRequiredText('发送消息'));
-      }
       throw e;
     }
-    throw new Error(`发送消息失败：${message}`);
+    throw new Error(`发送消息失败：${String(e)}`);
   }
 }

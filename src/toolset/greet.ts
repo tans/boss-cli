@@ -6,7 +6,6 @@ import {
   sleepRandom,
   snapshotBossPageViewport,
 } from '../browser/index.js';
-import { createWaitManualLoginRequiredText } from '../common/auth.js';
 import { closeBossModalIfPresent, waitAndCloseBossModalIfPresent } from '../common/boss_modal.js';
 import {
   closeBossPaywallPopupIfPresent,
@@ -115,9 +114,6 @@ export async function runRecommendGreet(options: GreetOptions): Promise<string> 
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (e instanceof Error && e.message.includes('浏览器会话尚未初始化')) {
-      throw new Error(createWaitManualLoginRequiredText('打招呼'));
-    }
     throw new Error(`执行打招呼失败：${message}`);
   }
 }

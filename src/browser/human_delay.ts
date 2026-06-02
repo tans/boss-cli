@@ -1,6 +1,11 @@
 import type { Page } from 'puppeteer-core';
 import { randomIntInclusive, sleep } from './timing.js';
 
+/** macOS 用 Meta，其余平台用 Control */
+export function selectAllModifierKey(): 'Meta' | 'Control' {
+  return process.platform === 'darwin' ? 'Meta' : 'Control';
+}
+
 /** 导航到沟通页并 load 后，等待 SPA/接口渲染 */
 export const CHAT_GOTO_SETTLE_MS = { min: 2800, max: 5200 } as const;
 

@@ -71,6 +71,9 @@ async function clearStaleSessionLockIfNeeded(): Promise<void> {
     return;
   }
   if (meta.hostname !== hostname()) {
+    if (!(await processExists(meta.pid))) {
+      await rm(SESSION_LOCK_FILE, { force: true }).catch(() => {});
+    }
     return;
   }
   if (await processExists(meta.pid)) {
@@ -129,7 +132,10 @@ export async function withBossSessionLock<T>(callback: () => Promise<T>): Promis
       if (Date.now() >= deadline) {
         const meta = await readSessionLockMeta();
         throw new Error(
-          'Boss session is busy for more than 30s. Lock owner: ' + formatSessionLockOwner(meta),
+          'Boss session is busy for more than 30s. Lock owner: ' +
+            formatSessionLockOwner(meta) +
+            '. If stale, delete ' +
+            SESSION_LOCK_FILE,
         );
       }
       await sleepRandom(SESSION_LOCK_POLL_MS, SESSION_LOCK_POLL_MS);

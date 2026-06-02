@@ -37,6 +37,9 @@ export async function ocrResumePngToTextFile(pngAbsPath: string): Promise<{ text
   };
 
   const p = ocrChain.then(run);
-  ocrChain = p.catch(() => {});
-  return p as Promise<{ textPath: string; text: string }>;
+  ocrChain = p.catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[boss-cli] resume OCR chain reset after failure:', msg);
+  });
+  return p;
 }
