@@ -5,7 +5,6 @@ import { withBossSessionPage } from '../common/boss_session_page.js';
 import { clickBossSidebarMenuToPath } from '../common/boss_sidebar_nav.js';
 
 const BOSS_CHAT_AI_FORM_URL = 'https://www.zhipin.com/web/chat/aiform';
-const AI_FORM_SETTLE_MS = { min: 1600, max: 2600 } as const;
 
 type SearchFormSnapshot = {
   selectedJob: string;
@@ -808,6 +807,58 @@ async function readSearchFormSnapshot(page: Page): Promise<SearchFormSnapshot> {
   })()`)) as SearchFormSnapshot;
 }
 
+async function waitForAiFormJobDropdownReady(page: Page): Promise<void> {
+  await page.waitForFunction(
+    `(() => {
+      const input = Array.from(
+        document.querySelectorAll(
+          ".ui-dropmenu-list input[type='text'], .ui-dropmenu-list input, .job-dropmenu-options .chat-job-search, .job-dropmenu-popover .chat-job-search, .top-chat-search .chat-job-search, input.chat-job-search",
+        ),
+      ).find((el) => {
+        if (!(el instanceof HTMLInputElement)) return false;
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      });
+      return !!input;
+    })()`,
+    { timeout: 6_000 },
+  );
+}
+
+async function waitForAiFormJobSearchResults(page: Page, keyword: string): Promise<void> {
+  await page.waitForFunction(
+    `((kw) => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, "").trim().toLowerCase();
+      const rows = Array.from(
+        document.querySelectorAll(
+          ".job-dropmenu-list .job-dropmenu-item, .job-dropmenu-options .job-list .job-item, .job-dropmenu-popover .job-list .job-item, .job-dropmenu-options .job-item",
+        ),
+      );
+      if (rows.length === 0) return false;
+      return rows.some((el) => {
+        const label = norm(el.querySelector(".job-option-text, .label")?.textContent || el.textContent || "");
+        return label.includes(norm(kw));
+      });
+    })`,
+    { timeout: 8_000 },
+    keyword,
+  );
+}
+
+async function waitForAiFormJobSelected(page: Page, expectedLabel: string): Promise<void> {
+  await page.waitForFunction(
+    `((label) => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+      const selected = norm(document.querySelector(".job-dropmenu-select .job-main-text")?.textContent);
+      return !!selected && selected === label;
+    })`,
+    { timeout: 8_000 },
+    expectedLabel,
+  );
+  await ensureInDeepSearchPage(page);
+}
+
 export async function selectAiFormJob(page: Page, keyword: string): Promise<string> {
   const kw = keyword.trim();
   if (!kw) {
@@ -825,7 +876,7 @@ export async function selectAiFormJob(page: Page, keyword: string): Promise<stri
   if (!opened) {
     throw new Error('未找到深度搜索页岗位下拉（.job-dropmenu-select）。');
   }
-  await sleepRandom(450, 900);
+  await waitForAiFormJobDropdownReady(page);
 
   const searched = (await page.evaluate(`(() => {
     const kw = ${kwLiteral};
@@ -847,9 +898,7 @@ export async function selectAiFormJob(page: Page, keyword: string): Promise<stri
     return true;
   })()`)) as boolean;
   if (searched) {
-    await sleepRandom(520, 1080);
-  } else {
-    await sleepRandom(200, 450);
+    await waitForAiFormJobSearchResults(page, kw);
   }
 
   const picked = (await page.evaluate(`(() => {
@@ -880,8 +929,9 @@ export async function selectAiFormJob(page: Page, keyword: string): Promise<stri
   if (!picked.ok) {
     throw new Error(`未找到匹配岗位「${kw}」。`);
   }
-  await sleepRandom(900, 1500);
-  return picked.label ?? kw;
+  const label = picked.label ?? kw;
+  await waitForAiFormJobSelected(page, label);
+  return label;
 }
 
 /** 深度搜索页当前选中的岗位文案（无则「默认」） */
@@ -1123,7 +1173,6 @@ export async function runBossSearchSet(opts: {
       const currentUrl = page.url();
       if (!isBossChatAiFormUrl(currentUrl)) {
         await clickBossSidebarMenuToPath(page, '深度搜索', '/web/chat/aiform');
-        await sleepRandom(AI_FORM_SETTLE_MS.min, AI_FORM_SETTLE_MS.max);
       }
       if (!isBossChatAiFormUrl(page.url())) {
         throw new Error('通过侧边栏“深度搜索”进入页面失败，请确认已登录并可访问 /web/chat/aiform。');
@@ -1134,7 +1183,7 @@ export async function runBossSearchSet(opts: {
         await selectAiFormJob(page, jobKeyword);
         await ensureInDeepSearchPage(page);
         if (hasFormEdit) {
-          await sleepRandom(500, 900);
+          await ensureInDeepSearchPage(page);
         }
       }
 
@@ -1164,7 +1213,6 @@ export async function runBossSearch(opts: { jobKeyword?: string } = {}): Promise
       const currentUrl = page.url();
       if (!isBossChatAiFormUrl(currentUrl)) {
         await clickBossSidebarMenuToPath(page, '深度搜索', '/web/chat/aiform');
-        await sleepRandom(AI_FORM_SETTLE_MS.min, AI_FORM_SETTLE_MS.max);
       }
       if (!isBossChatAiFormUrl(page.url())) {
         throw new Error('通过侧边栏“深度搜索”进入页面失败，请确认已登录并可访问 /web/chat/aiform。');
@@ -1174,7 +1222,6 @@ export async function runBossSearch(opts: { jobKeyword?: string } = {}): Promise
       if (jobKeyword) {
         await selectAiFormJob(page, jobKeyword);
         await ensureInDeepSearchPage(page);
-        await sleepRandom(600, 1200);
       }
 
       const geeks = await readDeepSearchGeekList(page);

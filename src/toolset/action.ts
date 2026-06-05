@@ -1,8 +1,6 @@
 import { join } from 'node:path';
 import type { Page } from 'puppeteer-core';
 import {
-  ONLINE_RESUME_IFRAME_APPEAR_MS,
-  ONLINE_RESUME_IFRAME_SETTLE_MS,
   ONLINE_RESUME_IFRAME_WAIT_MAX_MS,
   selectAllModifierKey,
   sleepRandom,
@@ -18,6 +16,7 @@ import {
   captureCResumeIframeToFile,
   closeCResumePanel,
   safeResumeScreenshotFileBase,
+  waitForVisibleCResumeIframeReady,
 } from '../common/c_resume_capture.js';
 import { ensureAppDataLayout, RESUME_SCREENSHOTS_DIR } from '../config.js';
 import { isResumeOcrEnabled, ocrResumePngToTextFile } from '../ocr/index.js';
@@ -523,8 +522,6 @@ async function captureOnlineResumeScreenshot(page: Page, candidateLabel: string)
     return null;
   }
 
-  await sleepRandom(ONLINE_RESUME_IFRAME_APPEAR_MS.min, ONLINE_RESUME_IFRAME_APPEAR_MS.max);
-
   const outcome = await waitForCResumeIframeOrPaywall(page, ONLINE_RESUME_IFRAME_WAIT_MAX_MS);
   if (outcome !== 'iframe') {
     const paywall = await describeBossPaywallPopupIfPresent(page);
@@ -535,7 +532,11 @@ async function captureOnlineResumeScreenshot(page: Page, candidateLabel: string)
     return null;
   }
 
-  await sleepRandom(ONLINE_RESUME_IFRAME_SETTLE_MS.min, ONLINE_RESUME_IFRAME_SETTLE_MS.max);
+  const ready = await waitForVisibleCResumeIframeReady(page);
+  if (!ready) {
+    await closeCResumePanel(page);
+    return null;
+  }
 
   const fileName = `online-resume-${safeResumeScreenshotFileBase(candidateLabel)}-${Date.now()}.png`;
   const absPath = join(RESUME_SCREENSHOTS_DIR, fileName);

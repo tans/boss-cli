@@ -1,11 +1,5 @@
 import type { Page } from 'puppeteer-core';
-import {
-  CHAT_GOTO_SETTLE_MS,
-  LIST_FILTER_GAP_MS,
-  LIST_MIN_BEFORE_EMPTY_OK_MS,
-  LIST_POLL_MS,
-  sleepRandom,
-} from '../browser/index.js';
+import { LIST_MIN_BEFORE_EMPTY_OK_MS, LIST_POLL_MS, sleepRandom } from '../browser/index.js';
 import { isBossChatIndexUrl } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { clickBossSidebarMenuToPath } from '../common/boss_sidebar_nav.js';
@@ -62,6 +56,25 @@ async function clickChatFilterTabAll(page: Page): Promise<void> {
   })()`);
 }
 
+async function waitForChatFilterAllSelected(page: Page): Promise<void> {
+  await page.waitForFunction(
+    `(() => {
+      const container = document.querySelector(".chat-message-filter-left");
+      if (!container) return false;
+      const norm = (v) => (v ?? "").replace(/\\s+/g, "");
+      const tabs = Array.from(container.querySelectorAll("span"));
+      const allTab = tabs.find((el) => norm(el.textContent).includes("全部"));
+      if (!allTab) return false;
+      const cls = String(allTab.className || "");
+      const selectedByClass = /active|selected|current|checked/.test(cls);
+      const selectedByAria = allTab.getAttribute("aria-selected") === "true";
+      const selectedByAncestor = !!allTab.closest(".active, .selected, .current, .checked");
+      return selectedByClass || selectedByAria || selectedByAncestor;
+    })()`,
+    { timeout: 6_000 },
+  );
+}
+
 /**
  * 与 `list` 一致：若当前不在沟通列表则点侧栏「沟通」进入 `/web/chat/index`，
  * 再点左侧筛选「全部」并等待列表稳定。`chat` 在按姓名找人前需处于该状态。
@@ -70,7 +83,6 @@ export async function ensureChatIndexAllFilter(page: Page): Promise<void> {
   const currentUrl = page.url();
   if (!isBossChatIndexUrl(currentUrl)) {
     await clickBossSidebarMenuToPath(page, '沟通', '/web/chat/index');
-    await sleepRandom(CHAT_GOTO_SETTLE_MS.min, CHAT_GOTO_SETTLE_MS.max);
   }
 
   if (!isBossChatIndexUrl(page.url())) {
@@ -91,10 +103,7 @@ export async function ensureChatIndexAllFilter(page: Page): Promise<void> {
   );
 
   await clickChatFilterTabAll(page);
-  await sleepRandom(LIST_FILTER_GAP_MS.min, LIST_FILTER_GAP_MS.max);
-  await sleepRandom(LIST_FILTER_GAP_MS.min, LIST_FILTER_GAP_MS.max);
-  await clickChatFilterTabAll(page);
-  await sleepRandom(LIST_FILTER_GAP_MS.min, LIST_FILTER_GAP_MS.max);
+  await waitForChatFilterAllSelected(page);
   await waitForCandidateListSettled(page, {
     timeoutMs: 14_000,
     pollMsMin: LIST_POLL_MS.min,

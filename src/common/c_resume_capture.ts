@@ -91,6 +91,45 @@ export async function findVisibleCResumeIframeHandle(page: Page): Promise<Elemen
   return null;
 }
 
+export async function waitForVisibleCResumeIframeReady(
+  page: Page,
+  timeoutMs = 4_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const iframe = await findVisibleCResumeIframeHandle(page);
+    if (!iframe) {
+      await sleepRandom(100, 180);
+      continue;
+    }
+    try {
+      const box = await iframe.boundingBox();
+      const contentFrame = await iframe.contentFrame();
+      if (box && box.width > 8 && box.height > 8) {
+        if (!contentFrame) {
+          return true;
+        }
+        try {
+          const ready = (await contentFrame.evaluate(`(() => {
+            const body = document.body;
+            const readyStateOk = document.readyState === "complete" || document.readyState === "interactive";
+            return readyStateOk && !!body && body.scrollHeight > 100;
+          })()`)) as boolean;
+          if (ready) {
+            return true;
+          }
+        } catch {
+          return true;
+        }
+      }
+    } finally {
+      await iframe.dispose();
+    }
+    await sleepRandom(100, 180);
+  }
+  return false;
+}
+
 /**
  * 在已出现 `c-resume` iframe 的页面上，对 iframe 整框截图并关闭弹层。
  * `preOpenViewport` 为打开弹层前的视口快照，请用 `snapshotBossPageViewport(page)`（`page.viewport()` 常为 null 时勿直接用默认尺寸）。
@@ -102,7 +141,7 @@ export async function captureCResumeIframeToFile(
 ): Promise<boolean> {
   try {
     await setTempHeight(page, preOpenViewport);
-    await sleepRandom(100, 320);
+    await waitForVisibleCResumeIframeReady(page, 1_000);
 
     const iframe = await findVisibleCResumeIframeHandle(page);
     if (!iframe) {

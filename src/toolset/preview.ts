@@ -2,13 +2,7 @@
  * 在线简历预览：须在「推荐」页或「深度搜索 aiform」页且列表已加载；不自动跳转，否则报错。
  */
 import { join } from 'node:path';
-import {
-  ONLINE_RESUME_IFRAME_APPEAR_MS,
-  ONLINE_RESUME_IFRAME_SETTLE_MS,
-  ONLINE_RESUME_IFRAME_WAIT_MAX_MS,
-  sleepRandom,
-  snapshotBossPageViewport,
-} from '../browser/index.js';
+import { ONLINE_RESUME_IFRAME_WAIT_MAX_MS, snapshotBossPageViewport } from '../browser/index.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import {
   closeBossPaywallPopupIfPresent,
@@ -19,6 +13,7 @@ import {
   captureCResumeIframeToFile,
   closeCResumePanel,
   safeResumeScreenshotFileBase,
+  waitForVisibleCResumeIframeReady,
 } from '../common/c_resume_capture.js';
 import { ensureAppDataLayout, RESUME_SCREENSHOTS_DIR } from '../config.js';
 import { isResumeOcrEnabled, ocrResumePngToTextFile } from '../ocr/index.js';
@@ -80,7 +75,6 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
         throw new Error('未在列表中找到该候选人，或点击未能打开简历预览。');
       }
 
-      await sleepRandom(ONLINE_RESUME_IFRAME_APPEAR_MS.min, ONLINE_RESUME_IFRAME_APPEAR_MS.max);
       const outcome = await waitForCResumeIframeOrPaywall(page, ONLINE_RESUME_IFRAME_WAIT_MAX_MS);
       if (outcome !== 'iframe') {
         const paywall = await describeBossPaywallPopupIfPresent(page);
@@ -90,8 +84,10 @@ export async function runPreview(options: PreviewOptions): Promise<string> {
         }
         throw new Error('点击后未出现在线简历 iframe（c-resume）。');
       }
-      await sleepRandom(ONLINE_RESUME_IFRAME_SETTLE_MS.min, ONLINE_RESUME_IFRAME_SETTLE_MS.max);
-
+      const ready = await waitForVisibleCResumeIframeReady(page);
+      if (!ready) {
+        throw new Error('在线简历 iframe 已出现，但内容未在预期时间内渲染完成。');
+      }
       ensureAppDataLayout();
       const fileName = `preview-${safeResumeScreenshotFileBase(target)}-${Date.now()}.png`;
       const absPath = join(RESUME_SCREENSHOTS_DIR, fileName);

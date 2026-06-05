@@ -1,6 +1,5 @@
 import {
   GREET_PAYWALL_WAIT_MAX_MS,
-  ONLINE_RESUME_IFRAME_APPEAR_MS,
   resumeHeight,
   setTempHeight,
   sleepRandom,
@@ -39,7 +38,6 @@ const RECOMMEND_GREET_EXPAND_SETTLE_MS = { min: 600, max: 1400 } as const;
 const GREET_MODAL_CLEANUP_WAIT_MAX_MS = 4000;
 
 async function assertNoGreetPaywallPopup(page: Page): Promise<void> {
-  await sleepRandom(ONLINE_RESUME_IFRAME_APPEAR_MS.min, ONLINE_RESUME_IFRAME_APPEAR_MS.max);
   if (await waitForBossPaywallPopup(page, GREET_PAYWALL_WAIT_MAX_MS)) {
     const paywall = await describeBossPaywallPopupIfPresent(page, 'greet');
     await closeBossPaywallPopupIfPresent(page);

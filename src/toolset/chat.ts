@@ -1,11 +1,5 @@
 import type { Page } from 'puppeteer-core';
-import {
-  CHAT_HISTORY_DIALOG_WAIT_MS,
-  CHAT_HISTORY_TAB_SWITCH_MS,
-  OPEN_CHAT_AFTER_ROW_CLICK_MS,
-  OPEN_CHAT_SCROLL_GAP_MS,
-  sleepRandom,
-} from '../browser/index.js';
+import { OPEN_CHAT_SCROLL_GAP_MS, sleepRandom } from '../browser/index.js';
 import { isBossChatIndexUrl } from '../common/auth.js';
 import { ensureChatIndexAllFilter } from './list.js';
 
@@ -22,6 +16,31 @@ function chatRoleTag(from: ChatFrom): string {
     default:
       return '[unknown]';
   }
+}
+
+async function waitForChatHistoryPanelReady(page: Page, selectedTab?: string): Promise<void> {
+  await page.waitForFunction(
+    `((tabLabel) => {
+      function norm(v) {
+        return (v ?? "").replace(/\\s+/g, " ").trim();
+      }
+      function isVisible(el) {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+      }
+      const root = document.querySelector(".chat-history-process");
+      if (!isVisible(root)) return false;
+      if (tabLabel) {
+        const selected = root.querySelector(".tab-hd span.selected");
+        if (norm(selected?.textContent) !== tabLabel) return false;
+      }
+      return !!root.querySelector(".record");
+    })`,
+    { timeout: 8_000 },
+    selectedTab ?? null,
+  );
 }
 
 /**
@@ -66,12 +85,10 @@ async function fetchColleagueChatHistorySection(page: Page): Promise<string | nu
   }
 
   try {
-    await page.waitForSelector('.boss-dialog__body .chat-history-process', { timeout: 12_000 });
+    await waitForChatHistoryPanelReady(page);
   } catch {
     return '(已点击「沟通记录」，但弹窗未在预期时间内出现。)';
   }
-
-  await sleepRandom(CHAT_HISTORY_DIALOG_WAIT_MS.min, CHAT_HISTORY_DIALOG_WAIT_MS.max);
 
   const scrapeRows = () =>
     page.evaluate(`(() => {
@@ -106,11 +123,11 @@ async function fetchColleagueChatHistorySection(page: Page): Promise<string | nu
     );
 
   await clickTab('同事沟通');
-  await sleepRandom(CHAT_HISTORY_TAB_SWITCH_MS.min, CHAT_HISTORY_TAB_SWITCH_MS.max);
+  await waitForChatHistoryPanelReady(page, '同事沟通');
   const rowsColleague = await scrapeRows();
 
   await clickTab('我的沟通');
-  await sleepRandom(CHAT_HISTORY_TAB_SWITCH_MS.min, CHAT_HISTORY_TAB_SWITCH_MS.max);
+  await waitForChatHistoryPanelReady(page, '我的沟通');
   const rowsMine = await scrapeRows();
 
   const fmt = (label: string, rows: Array<{ action: string; operat: string }>): string[] => {
@@ -180,8 +197,19 @@ async function closeChatHistoryPopup(page: Page): Promise<void> {
         }
       })()`);
     }
-    await sleepRandom(250, 550);
-    const popupWrap = await page.$('.boss-popup__wrapper.chat-history');
+    await page.waitForFunction(
+      `(() => {
+        const roots = Array.from(document.querySelectorAll(".boss-popup__wrapper.chat-history, .boss-dialog__wrapper.chat-history"));
+        return roots.every((el) => {
+          if (!(el instanceof HTMLElement)) return true;
+          const st = window.getComputedStyle(el);
+          const r = el.getBoundingClientRect();
+          return st.display === "none" || st.visibility === "hidden" || r.width <= 0 || r.height <= 0;
+        });
+      })()`,
+      { timeout: 2_000 },
+    ).catch(() => {});
+    const popupWrap = await page.$('.boss-popup__wrapper.chat-history, .boss-dialog__wrapper.chat-history');
     if (popupWrap) {
       await page.evaluate(`(() => {
         const root =
@@ -190,7 +218,18 @@ async function closeChatHistoryPopup(page: Page): Promise<void> {
         const c = root?.querySelector(".boss-popup__close") ?? document.querySelector(".boss-popup__close");
         c?.click();
       })()`);
-      await sleepRandom(150, 350);
+      await page.waitForFunction(
+        `(() => {
+          const roots = Array.from(document.querySelectorAll(".boss-popup__wrapper.chat-history, .boss-dialog__wrapper.chat-history"));
+          return roots.every((el) => {
+            if (!(el instanceof HTMLElement)) return true;
+            const st = window.getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            return st.display === "none" || st.visibility === "hidden" || r.width <= 0 || r.height <= 0;
+          });
+        })()`,
+        { timeout: 1_500 },
+      ).catch(() => {});
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -323,12 +362,11 @@ export async function runOpenCandidateChat(
       row.click();
     })`);
 
-    await sleepRandom(OPEN_CHAT_AFTER_ROW_CLICK_MS.min, OPEN_CHAT_AFTER_ROW_CLICK_MS.max);
-
-    const selected = await targetWrap.$eval('.geek-item', (el) => el.classList.contains('selected'));
+    let selected = await targetWrap
+      .$eval('.geek-item', (el) => el.classList.contains('selected'))
+      .catch(() => false);
 
     try {
-      await page.waitForSelector('.base-info-single-container', { timeout: 12_000 });
       await page.waitForFunction(
         `((name) => {
           const text = document.querySelector(".base-info-single-container .name-box")?.textContent ?? "";
@@ -356,6 +394,9 @@ export async function runOpenCandidateChat(
         { timeout: 16_000 },
       );
     } catch {
+      selected = await targetWrap
+        .$eval('.geek-item', (el) => el.classList.contains('selected'))
+        .catch(() => selected);
       throw new Error(
         `已尝试点击 ${foundName}（selected=${String(selected)}），但未检测到对应聊天详情面板。`,
       );

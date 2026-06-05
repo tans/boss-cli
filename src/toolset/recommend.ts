@@ -1,10 +1,8 @@
 import type { Frame, Page } from 'puppeteer-core';
-import { sleepRandom } from '../browser/index.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { clickBossSidebarMenuToPath } from '../common/boss_sidebar_nav.js';
 
 const BOSS_CHAT_RECOMMEND_URL = 'https://www.zhipin.com/web/chat/recommend';
-const RECOMMEND_SETTLE_MS = { min: 1400, max: 2400 } as const;
 
 export type RecommendCandidate = {
   geekId: string;
@@ -82,6 +80,52 @@ async function readCurrentRecommendJobLabel(frame: Frame): Promise<string> {
   })()`)) as string;
 }
 
+async function waitForRecommendJobDropdownReady(frame: Frame): Promise<void> {
+  await frame.waitForFunction(
+    `(() => {
+      const options = document.querySelector(".job-selecter-options");
+      if (!(options instanceof HTMLElement)) return false;
+      const rect = options.getBoundingClientRect();
+      const style = window.getComputedStyle(options);
+      if (rect.width <= 0 || rect.height <= 0 || style.display === "none" || style.visibility === "hidden") {
+        return false;
+      }
+      return !!options.querySelector(".top-chat-search .chat-job-search");
+    })()`,
+    { timeout: 6_000 },
+  );
+}
+
+async function waitForRecommendJobSearchResults(frame: Frame, keyword: string): Promise<void> {
+  await frame.waitForFunction(
+    `((kw) => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, "").trim().toLowerCase();
+      const rows = Array.from(document.querySelectorAll(".job-selecter-options .job-list .job-item"));
+      if (rows.length === 0) return false;
+      if (!kw) return true;
+      return rows.some((el) => {
+        const label = norm(el.querySelector(".label")?.textContent || el.textContent || "");
+        return label.includes(norm(kw));
+      });
+    })`,
+    { timeout: 8_000 },
+    keyword,
+  );
+}
+
+async function waitForRecommendJobSelected(frame: Frame, expectedLabel: string): Promise<void> {
+  await frame.waitForFunction(
+    `((label) => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+      const current = norm(document.querySelector(".job-selecter-wrap .ui-dropmenu-label")?.textContent);
+      return !!current && current === label;
+    })`,
+    { timeout: 8_000 },
+    expectedLabel,
+  );
+  await ensureRecommendFrameReady(frame);
+}
+
 export async function selectRecommendJob(frame: Frame, keyword: string): Promise<string> {
   const kw = keyword.trim();
   if (!kw) {
@@ -99,7 +143,7 @@ export async function selectRecommendJob(frame: Frame, keyword: string): Promise
   if (!opened) {
     throw new Error('未找到岗位下拉入口（.job-selecter-wrap .ui-dropmenu-label）。');
   }
-  await sleepRandom(380, 820);
+  await waitForRecommendJobDropdownReady(frame);
 
   const searched = (await frame.evaluate(`(() => {
     const kw = ${kwLiteral};
@@ -114,7 +158,7 @@ export async function selectRecommendJob(frame: Frame, keyword: string): Promise
   if (!searched) {
     throw new Error('已打开岗位下拉，但未找到职位搜索框（.chat-job-search）。');
   }
-  await sleepRandom(520, 1080);
+  await waitForRecommendJobSearchResults(frame, kw);
 
   const picked = (await frame.evaluate(`(() => {
     const kw = ${kwLiteral};
@@ -136,14 +180,14 @@ export async function selectRecommendJob(frame: Frame, keyword: string): Promise
   if (!picked.ok) {
     throw new Error(`未找到匹配岗位“${kw}”。`);
   }
-  await sleepRandom(900, 1500);
-  return picked.label ?? kw;
+  const label = picked.label ?? kw;
+  await waitForRecommendJobSelected(frame, label);
+  return label;
 }
 
 export async function ensureInRecommendPage(page: Page): Promise<Frame> {
   if (!isBossChatRecommendUrl(page.url())) {
     await clickBossSidebarMenuToPath(page, '推荐', '/web/chat/recommend');
-    await sleepRandom(RECOMMEND_SETTLE_MS.min, RECOMMEND_SETTLE_MS.max);
   }
   if (!isBossChatRecommendUrl(page.url())) {
     throw new Error('通过侧边栏“推荐”进入页面失败，请确认已登录并可访问 /web/chat/recommend。');
