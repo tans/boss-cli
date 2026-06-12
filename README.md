@@ -63,6 +63,7 @@ boss help
 | 命令 | 说明 |
 | --- | --- |
 | `boss login` | 打开 Boss直聘登录页（扫码/验证后手动完成） |
+| `boss update` | 通过 npm 安装最新版 boss-cli |
 | `boss list [--unread]` | 读取聊天列表；`--unread` 仅未读 |
 | `boss chat <姓名> [--strict]` | 打开指定候选人会话 |
 | `boss send [--text <内容>]` | 向当前会话发送消息 |

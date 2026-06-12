@@ -22,7 +22,11 @@ import {
   type ChatPageAction,
 } from '../toolset/index.js';
 import { printBossInteractiveBanner } from './banner.js';
-import { printVersionInfo } from './version.js';
+import {
+  printPackageUpdateNoticeIfDue,
+  printVersionInfo,
+  runPackageUpdate,
+} from './version.js';
 
 class CliError extends Error {
   constructor(message: string) {
@@ -133,6 +137,8 @@ function printHelp(): void {
       显示本帮助
   boss version | ver（或 -v / --version）
       显示当前版本并检查 npm 是否有更新
+  boss update
+      使用 npm 安装最新版 boss-cli
   boss login
       打开登录页（需要用户在浏览器中自行完成登录，这个命令会直接返回）
   boss list [--unread]
@@ -276,6 +282,14 @@ export async function executeCommand(argv: string[]): Promise<string> {
 
   if (cmd === 'login') {
     return implLogin();
+  }
+
+  if (cmd === 'update') {
+    const { rest, opts, flags } = parseOpts(tail);
+    if (rest.length > 0 || Object.keys(opts).length > 0 || flags.size > 0) {
+      die('❌ 用法: update');
+    }
+    return runPackageUpdate();
   }
 
   if (cmd === 'list') {
@@ -440,6 +454,7 @@ export async function runOneCommand(argv: string[]): Promise<void> {
 
 async function runInteractiveLoop(): Promise<void> {
   const rl = createInterface({ input, output, terminal: true });
+  await printPackageUpdateNoticeIfDue();
   printBossInteractiveBanner();
   try {
     for (;;) {
@@ -504,6 +519,10 @@ export async function runCli(argv: string[]): Promise<void> {
   ) {
     await printVersionInfo();
     return;
+  }
+
+  if (normalizeSubcommand(argv[0] ?? '') !== 'update') {
+    await printPackageUpdateNoticeIfDue();
   }
 
   if (argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h') {
