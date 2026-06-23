@@ -94,7 +94,25 @@ async function ensureBossChatShellUrlBeforeMenuList(page: Page): Promise<void> {
   if (isBossChatShellUrl(page.url())) {
     return;
   }
-  await page.goto(BOSS_CHAT_INDEX_URL, { waitUntil: 'load', timeout: 60_000 });
+  await page.evaluate(
+    `((url) => {
+      window.location.assign(url);
+    })`,
+    BOSS_CHAT_INDEX_URL,
+  );
+  await page.waitForFunction(
+    `(() => {
+      try {
+        const u = new URL(window.location.href);
+        if (!u.hostname.includes("zhipin.com")) return false;
+        const p = u.pathname.replace(/\\/+$/, "") || "/";
+        return p === "/web/chat" || p.startsWith("/web/chat/");
+      } catch {
+        return false;
+      }
+    })()`,
+    { timeout: 60_000 },
+  );
 }
 
 async function ensureMenuListMountedAfterLoad(page: Page): Promise<void> {

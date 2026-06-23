@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Elysia, t } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { loadAppConfig } from "@boss/config";
@@ -5,6 +8,9 @@ import {
   enqueue,
   getAccount,
   getAISetting,
+  getAutoFilterSetting,
+  getConversationAnalysis,
+  getBotBehaviorSetting,
   getConversation,
   getDashboardSummary,
   getWorkingHours,
@@ -17,6 +23,8 @@ import {
   listTemplates,
   setConversationStatus,
   updateAISetting,
+  updateAutoFilterSetting,
+  updateBotBehaviorSetting,
   updateJob,
   updateListeningStatus,
   updateTemplate,
@@ -24,6 +32,21 @@ import {
 } from "@boss/db";
 
 const config = loadAppConfig();
+const webDistDir = fileURLToPath(new URL("../../web/dist", import.meta.url));
+
+const mimeTypes: Record<string, string> = {
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+};
 
 function jsonError(error: unknown): { error: string } {
   return {
@@ -37,6 +60,28 @@ function omitUndefined<T extends Record<string, unknown>>(input: T): Partial<T> 
   ) as Partial<T>;
 }
 
+function staticResponse(
+  pathname: string,
+  set: { status?: number | string; headers: Record<string, string | number | string[]> },
+): Response {
+  const indexPath = join(webDistDir, "index.html");
+  if (!existsSync(indexPath)) {
+    set.status = 500;
+    return new Response(
+      `Web build not found at ${indexPath}. Run bun --cwd apps/web build before serving the single-port app.`,
+      { headers: { "content-type": "text/plain; charset=utf-8" } },
+    );
+  }
+
+  const normalized = pathname === "/" ? "/index.html" : pathname;
+  const relativePath = normalized.replace(/^\/+/, "");
+  const targetPath = join(webDistDir, relativePath);
+  const assetPath = existsSync(targetPath) ? targetPath : indexPath;
+  const ext = extname(assetPath);
+  set.headers["content-type"] = mimeTypes[ext] ?? "application/octet-stream";
+  return new Response(Bun.file(assetPath));
+}
+
 const app = new Elysia()
   .use(cors())
   .onError(({ error, set }) => {
@@ -48,6 +93,7 @@ const app = new Elysia()
     service: "boss-api",
   }))
   .get("/api/dashboard", () => getDashboardSummary())
+  .get("/api/analytics/conversations", () => getConversationAnalysis())
   .get("/api/account", () => getAccount())
   .post("/api/account/login", () => {
     const queueItem = enqueue({
@@ -91,6 +137,70 @@ const app = new Elysia()
       message: "监听将在当前原子步骤结束后停止。",
     });
     return account;
+  })
+  .post("/api/queue/sync-unread", () => {
+    const queueItem = enqueue({
+      type: "SYNC_UNREAD",
+      payload: {
+        source: "manual-sync-unread",
+      },
+    });
+    insertLog({
+      level: "INFO",
+      event: "manual-sync-unread-enqueued",
+      bossAccountId: "default",
+      queueItemId: queueItem.id,
+      message: "已手动创建未读同步任务。",
+    });
+    return queueItem;
+  })
+  .post("/api/queue/sync-all-conversations", () => {
+    const queueItem = enqueue({
+      type: "SYNC_ALL_CONVERSATIONS",
+      payload: {
+        source: "manual-sync-all-conversations",
+      },
+    });
+    insertLog({
+      level: "INFO",
+      event: "manual-sync-all-conversations-enqueued",
+      bossAccountId: "default",
+      queueItemId: queueItem.id,
+      message: "已手动创建全部沟通同步任务。",
+    });
+    return queueItem;
+  })
+  .post("/api/queue/sync-archived-conversations", () => {
+    const queueItem = enqueue({
+      type: "SYNC_ARCHIVED_CONVERSATIONS",
+      payload: {
+        source: "manual-sync-archived-conversations",
+      },
+    });
+    insertLog({
+      level: "INFO",
+      event: "manual-sync-archived-conversations-enqueued",
+      bossAccountId: "default",
+      queueItemId: queueItem.id,
+      message: "已手动创建归档聊天记录同步任务。",
+    });
+    return queueItem;
+  })
+  .post("/api/queue/sync-positions", () => {
+    const queueItem = enqueue({
+      type: "SYNC_POSITIONS",
+      payload: {
+        source: "manual-sync-positions",
+      },
+    });
+    insertLog({
+      level: "INFO",
+      event: "manual-sync-positions-enqueued",
+      bossAccountId: "default",
+      queueItemId: queueItem.id,
+      message: "已手动创建岗位同步任务。",
+    });
+    return queueItem;
   })
   .get("/api/jobs", () => listJobs())
   .patch(
@@ -158,6 +268,34 @@ const app = new Elysia()
       }),
     },
   )
+  .get("/api/auto-filter", () => getAutoFilterSetting())
+  .patch(
+    "/api/auto-filter",
+    ({ body }) => updateAutoFilterSetting(body),
+    {
+      body: t.Object({
+        enabled: t.Boolean(),
+        minAge: t.Nullable(t.Number()),
+        maxAge: t.Nullable(t.Number()),
+        allowedEducations: t.Array(t.String()),
+        rejectMessageTemplate: t.String(),
+      }),
+    },
+  )
+  .get("/api/bot-behavior", () => getBotBehaviorSetting())
+  .patch(
+    "/api/bot-behavior",
+    ({ body }) => updateBotBehaviorSetting(body),
+    {
+      body: t.Object({
+        workerPollMs: t.Number(),
+        unreadListenLoopMinMs: t.Number(),
+        unreadListenLoopMaxMs: t.Number(),
+        archiveOpenDelayMinMs: t.Number(),
+        archiveOpenDelayMaxMs: t.Number(),
+      }),
+    },
+  )
   .get("/api/conversations", () => listConversations())
   .get("/api/conversations/:id", ({ params }) => ({
     conversation: getConversation(params.id),
@@ -198,6 +336,9 @@ const app = new Elysia()
   })
   .post("/api/conversations/:id/process", ({ params }) => {
     const conversation = getConversation(params.id);
+    if (conversation.archived) {
+      throw new Error(`归档会话不可入队处理：${conversation.candidateName}`);
+    }
     const queueItem = enqueue({
       type: "PROCESS_CONVERSATION",
       conversationId: params.id,
@@ -217,6 +358,7 @@ const app = new Elysia()
   })
   .get("/api/queue", () => listQueue())
   .get("/api/logs", () => listLogs())
+  .get("/*", ({ path, set }) => staticResponse(path, set))
   .listen(config.apiPort);
 
 console.log(`boss-api listening on ${app.server?.hostname}:${app.server?.port}`);

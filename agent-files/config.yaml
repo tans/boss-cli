@@ -1,0 +1,5 @@
+agentName: Recruiting Assistant
+language: zh-CN
+scenario: recruiting
+escalateSalary: true
+wecomMaxSends: 2

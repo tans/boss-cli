@@ -10,8 +10,10 @@ export async function clickBossSidebarMenuToPath(
   menuLabel: string,
   targetPath: string,
 ): Promise<void> {
+  const args = JSON.stringify({ label: menuLabel, path: targetPath });
   const clicked = (await page.evaluate(
-    `(({ label, path }) => {
+    `((args) => {
+      const { label, path } = args;
       const norm = (v) => (v ?? "").replace(/\\s+/g, "");
       const links = Array.from(document.querySelectorAll(".menu-list a"));
       const target = links.find((a) => {
@@ -28,8 +30,7 @@ export async function clickBossSidebarMenuToPath(
       target.scrollIntoView({ block: "center", inline: "nearest" });
       target.click();
       return true;
-    })`,
-    { label: menuLabel, path: targetPath },
+    })(${args})`,
   )) as boolean;
 
   if (!clicked) {
@@ -37,15 +38,15 @@ export async function clickBossSidebarMenuToPath(
   }
 
   await page.waitForFunction(
-    `((path) => {
+    `(() => {
+      const path = ${JSON.stringify(targetPath)};
       try {
         const p = window.location.pathname.replace(/\\/+$/, "") || "/";
         return p === path;
       } catch {
         return false;
       }
-    })`,
+    })()`,
     { timeout: SIDEBAR_NAV_WAIT_MS },
-    targetPath,
   );
 }

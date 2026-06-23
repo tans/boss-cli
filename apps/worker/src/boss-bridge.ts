@@ -1,14 +1,20 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { execFile } from "node:child_process";
+import { withBossSessionPage } from "../../../src/common/boss_session_page.js";
+import { listOpenPositionsWithStableIds } from "../../../src/toolset/jd.js";
+import { listCandidates, listCandidatesIncludingArchived } from "../../../src/toolset/list.js";
+import { openCandidateChatSnapshot } from "../../../src/toolset/chat.js";
 
 export type BossListItem = {
   bossConversationId: string;
+  conversationStableSource: string;
   candidateName: string;
   jobName: string | null;
+  archived: boolean;
   unreadCount: number;
   latestMessage: string | null;
   latestMessageAt: string | null;
@@ -24,6 +30,7 @@ export type BossChatMessage = {
 export type BossChatSnapshot = {
   candidateName: string;
   jobName: string | null;
+  basicFacts: string[];
   messages: BossChatMessage[];
   hasResume: boolean;
 };
@@ -33,63 +40,150 @@ export type BossPosition = {
   name: string;
 };
 
-const execFileAsync = promisify(execFile);
-const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-const cliEntry = join(repoRoot, "dist", "cli", "index.js");
+export type BossAccountSnapshot = {
+  nickname: string;
+};
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function stableConversationId(candidateName: string, jobName: string | null): string {
-  return hash(`${candidateName}|${jobName ?? ""}`).slice(0, 24);
+const execFileAsync = promisify(execFile);
+const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
+const cliEntry = join(repoRoot, "dist", "cli", "index.js");
+
+function mapSender(from: "friend" | "myself" | "system" | "unknown"): BossChatMessage["sender"] {
+  if (from === "friend") {
+    return "candidate";
+  }
+  if (from === "myself") {
+    return "hr";
+  }
+  return "system";
 }
 
-export async function listUnreadBossConversations(): Promise<BossListItem[]> {
-  const output = await runBossCli(["list", "--unread"]);
-  return parseCandidateList(output);
+export async function listUnreadConversations(): Promise<BossListItem[]> {
+  const items = await listCandidates({ unreadOnly: true });
+  return items.map((item) => ({
+    bossConversationId: item.bossConversationId,
+    conversationStableSource: item.stableSource,
+    candidateName: item.name,
+    jobName: item.job || null,
+    archived: false,
+    unreadCount: item.unreadCount,
+    latestMessage: item.message || null,
+    latestMessageAt: item.time || null,
+  }));
 }
 
-export async function listBossPositions(): Promise<BossPosition[]> {
-  const output = await runBossCli(["positions"]);
-  return output
-    .split("\n")
-    .map((line) => line.trim())
-    .map((line) => {
-      const match = line.match(/^\d+\.\s*(.+?)(?:｜|$)/);
-      if (!match) {
-        return null;
+export async function listAllConversations(): Promise<BossListItem[]> {
+  const items = await listCandidatesIncludingArchived();
+  return items.map((item) => ({
+    bossConversationId: item.bossConversationId,
+    conversationStableSource: item.stableSource,
+    candidateName: item.name,
+    jobName: item.job || null,
+    archived: item.archived,
+    unreadCount: item.unreadCount,
+    latestMessage: item.message || null,
+    latestMessageAt: item.time || null,
+  }));
+}
+
+export async function readAccountSnapshot(): Promise<BossAccountSnapshot> {
+  return withBossSessionPage(async (page) => {
+    const snapshot = (await page.evaluate(`(() => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+      const selectors = [
+        ".user-name",
+        "span.user-name",
+        "[class*='user-name']",
+        ".label-name",
+        ".nav-user .name",
+        ".nav-user-name",
+        "a.nav-user",
+        ".header-nav [class*='name']",
+        ".user-info [class*='name']",
+      ];
+      for (const selector of selectors) {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        for (const node of nodes) {
+          const text = norm(node.textContent);
+          if (text && !/^(我要登录|登录|注册|登录\\/注册)$/u.test(text)) {
+            return { nickname: text };
+          }
+        }
       }
-      const name = match[1]?.trim();
-      if (!name) {
-        return null;
+      const bodyText = document.body instanceof HTMLElement ? document.body.innerText || "" : "";
+      if (/\\b我要登录\\b/u.test(bodyText)) {
+        throw new Error("Boss 当前页面显示未登录入口，无法读取账号信息。");
       }
+      throw new Error("Boss 已进入主界面，但未找到账号昵称节点。");
+    })()`)) as BossAccountSnapshot;
+    return snapshot;
+  });
+}
+
+export async function listPositions(): Promise<BossPosition[]> {
+  const positions = await listOpenPositionsWithStableIds();
+  return positions.map((position) => {
+    if (!position.id) {
+      throw new Error(`Boss 职位 ${position.title} 缺少 DOM data-id，无法同步为稳定岗位。`);
+    }
+    return {
+      bossJobId: position.id,
+      name: position.title,
+    };
+  });
+}
+
+export async function openConversationSnapshot(input: {
+  candidateName: string;
+  bossConversationId: string;
+  archived?: boolean;
+}): Promise<BossChatSnapshot> {
+  const snapshot = await withBossSessionPage((page) =>
+    openCandidateChatSnapshot(
+      page,
+      input.candidateName,
+      true,
+      input.bossConversationId,
+      input.archived ? "归档" : "全部",
+    ),
+  );
+  return {
+    candidateName: snapshot.candidateName,
+    jobName: snapshot.jobName || null,
+    basicFacts: snapshot.summary.basicFacts,
+    hasResume: snapshot.hasResume,
+    messages: snapshot.messages.map((message, index) => {
+      const sender = mapSender(message.from);
       return {
-        bossJobId: hash(name).slice(0, 24),
-        name,
+        sender,
+        sentAt: message.time || null,
+        text: message.text,
+        sourceHash: hash(
+          [
+            snapshot.candidateName,
+            snapshot.jobName,
+            index,
+            sender,
+            message.time,
+            message.text,
+          ].join("|"),
+        ),
       };
-    })
-    .filter((item): item is BossPosition => item !== null);
+    }),
+  };
 }
 
-export async function openBossConversation(
-  candidateName: string,
-): Promise<BossChatSnapshot> {
-  const output = await runBossCli(["chat", candidateName]);
-  return parseChatSnapshot(output, candidateName);
-}
-
-export async function sendBossMessage(text: string): Promise<string> {
-  return runBossCli(["send", "--text", text]);
-}
-
-async function runBossCli(args: string[]): Promise<string> {
+export async function sendMessage(text: string): Promise<string> {
   try {
     await access(cliEntry);
   } catch {
     throw new Error(`Boss CLI build not found at ${cliEntry}. Run npm run build before starting the worker.`);
   }
-  const { stdout, stderr } = await execFileAsync(process.execPath, [cliEntry, ...args], {
+  const { stdout, stderr } = await execFileAsync(process.execPath, [cliEntry, "send", "--text", text], {
     cwd: repoRoot,
     env: process.env,
     maxBuffer: 1024 * 1024 * 10,
@@ -98,81 +192,4 @@ async function runBossCli(args: string[]): Promise<string> {
     throw new Error(stderr.trim());
   }
   return stdout;
-}
-
-function parseCandidateList(output: string): BossListItem[] {
-  return output
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /^\d+\.\s/.test(line))
-    .map((line) => {
-      const withoutIndex = line.replace(/^\d+\.\s*/, "");
-      const parts = withoutIndex.split("｜").map((part) => part.trim());
-      const candidateName = parts[0] ?? "";
-      const jobName = parts[1] && !parts[1].startsWith("未读:") ? parts[1] : null;
-      const unreadRaw = parts.find((part) => part.startsWith("未读:"));
-      const timeRaw = parts.find((part) => part.startsWith("时间:"));
-      const messageRaw = parts.find((part) => part.startsWith("消息:"));
-      const unreadCount = Number.parseInt(unreadRaw?.replace("未读:", "") ?? "0", 10) || 0;
-      return {
-        bossConversationId: stableConversationId(candidateName, jobName),
-        candidateName,
-        jobName,
-        unreadCount,
-        latestMessageAt: timeRaw?.replace("时间:", "") || null,
-        latestMessage: messageRaw?.replace("消息:", "") || null,
-      };
-    })
-    .filter((item) => item.candidateName.length > 0);
-}
-
-function parseChatSnapshot(output: string, fallbackName: string): BossChatSnapshot {
-  const candidateName =
-    output.match(/成功进入候选人聊天：(.+)/)?.[1]?.trim() ||
-    output.match(/姓名:\s*(.+)/)?.[1]?.trim() ||
-    fallbackName;
-  const jobName = output.match(/沟通职位:\s*(.+)/)?.[1]?.trim() ?? null;
-  const hasResume = output.includes("简历获取状态: 已获取");
-  const messagesStart = output.indexOf("完整聊天消息：");
-  const messageLines =
-    messagesStart === -1 ? [] : output.slice(messagesStart).split("\n").slice(1);
-  const messages = messageLines
-    .map((line, index): BossChatMessage | null => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed === "(暂无)") {
-        return null;
-      }
-      const match = trimmed.match(/^\[(candidate|you|system|unknown)\](?:\s+([^\s]+))?\s*(.*)$/);
-      if (!match) {
-        return null;
-      }
-      const rawSender = match[1];
-      const sender =
-        rawSender === "candidate"
-          ? "candidate"
-          : rawSender === "you"
-            ? "hr"
-            : rawSender === "system"
-              ? "system"
-              : "system";
-      const sentAt = match[2] ?? null;
-      const text = match[3]?.trim() ?? "";
-      if (!text) {
-        return null;
-      }
-      return {
-        sender,
-        sentAt,
-        text,
-        sourceHash: hash(`${candidateName}|${index}|${sender}|${sentAt ?? ""}|${text}`),
-      };
-    })
-    .filter((item): item is BossChatMessage => item !== null);
-
-  return {
-    candidateName,
-    jobName,
-    messages,
-    hasResume,
-  };
 }

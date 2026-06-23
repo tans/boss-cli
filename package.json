@@ -53,6 +53,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "npm run build && node dist/cli/index.js",
+    "start": "bun scripts/start-app.mjs",
     "app:api": "bun --cwd apps/api dev",
     "app:web": "bun --cwd apps/web dev",
     "app:worker": "bun --cwd apps/worker dev",

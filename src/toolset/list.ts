@@ -1,16 +1,48 @@
 import type { Page } from 'puppeteer-core';
+import { createHash } from 'node:crypto';
 import { LIST_MIN_BEFORE_EMPTY_OK_MS, LIST_POLL_MS, sleepRandom } from '../browser/index.js';
 import { isBossChatIndexUrl } from '../common/auth.js';
 import { withBossSessionPage } from '../common/boss_session_page.js';
 import { clickBossSidebarMenuToPath } from '../common/boss_sidebar_nav.js';
 
-type CandidateItem = {
+export type CandidateItem = {
+  bossConversationId: string;
+  stableSource: string;
   name: string;
   job: string;
   time: string;
   message: string;
   unreadCount: number;
 };
+
+type CandidateDomItem = Omit<CandidateItem, 'bossConversationId'> & {
+  stableSource: string;
+};
+
+export type ChatFilterLabel = '全部' | '归档';
+
+function hash(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+export function bossConversationIdFromStableSource(stableSource: string): string {
+  if (!stableSource.trim()) {
+    throw new Error('Boss 会话缺少可定位的 DOM 标识，无法生成稳定 conversation id。');
+  }
+  return hash(stableSource).slice(0, 24);
+}
+
+function mapCandidateDomItem(item: CandidateDomItem): CandidateItem {
+  return {
+    bossConversationId: bossConversationIdFromStableSource(item.stableSource),
+    stableSource: item.stableSource,
+    name: item.name,
+    job: item.job,
+    time: item.time,
+    message: item.message,
+    unreadCount: item.unreadCount,
+  };
+}
 
 async function waitForCandidateListSettled(
   page: Page,
@@ -42,36 +74,45 @@ async function waitForCandidateListSettled(
   }
 }
 
-async function clickChatFilterTabAll(page: Page): Promise<void> {
-  await page.evaluate(`(() => {
-    const targetText = "全部";
+async function clickChatFilterTab(page: Page, label: ChatFilterLabel): Promise<void> {
+  const clicked = (await page.evaluate(
+    `((targetText) => {
     const container = document.querySelector(".chat-message-filter-left");
-    if (!container) return;
+    if (!container) {
+      throw new Error("未找到聊天列表筛选容器（.chat-message-filter-left）。");
+    }
     const spans = Array.from(container.querySelectorAll("span"));
     const norm = (v) => (v ?? "").replace(/\\s+/g, "");
     const target = spans.find((el) => norm(el.textContent).includes(targetText));
-    if (!target) return;
+    if (!target) return false;
     target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     target.click();
-  })()`);
+    return true;
+  })`,
+    label,
+  )) as boolean;
+  if (!clicked) {
+    throw new Error(`未找到聊天列表筛选标签：${label}`);
+  }
 }
 
-async function waitForChatFilterAllSelected(page: Page): Promise<void> {
+async function waitForChatFilterSelected(page: Page, label: ChatFilterLabel): Promise<void> {
   await page.waitForFunction(
-    `(() => {
+    `((targetText) => {
       const container = document.querySelector(".chat-message-filter-left");
       if (!container) return false;
       const norm = (v) => (v ?? "").replace(/\\s+/g, "");
       const tabs = Array.from(container.querySelectorAll("span"));
-      const allTab = tabs.find((el) => norm(el.textContent).includes("全部"));
-      if (!allTab) return false;
-      const cls = String(allTab.className || "");
+      const targetTab = tabs.find((el) => norm(el.textContent).includes(targetText));
+      if (!targetTab) return false;
+      const cls = String(targetTab.className || "");
       const selectedByClass = /active|selected|current|checked/.test(cls);
-      const selectedByAria = allTab.getAttribute("aria-selected") === "true";
-      const selectedByAncestor = !!allTab.closest(".active, .selected, .current, .checked");
+      const selectedByAria = targetTab.getAttribute("aria-selected") === "true";
+      const selectedByAncestor = !!targetTab.closest(".active, .selected, .current, .checked");
       return selectedByClass || selectedByAria || selectedByAncestor;
-    })()`,
+    })`,
     { timeout: 6_000 },
+    label,
   );
 }
 
@@ -80,6 +121,10 @@ async function waitForChatFilterAllSelected(page: Page): Promise<void> {
  * 再点左侧筛选「全部」并等待列表稳定。`chat` 在按姓名找人前需处于该状态。
  */
 export async function ensureChatIndexAllFilter(page: Page): Promise<void> {
+  await ensureChatIndexFilter(page, '全部');
+}
+
+export async function ensureChatIndexFilter(page: Page, label: ChatFilterLabel): Promise<void> {
   const currentUrl = page.url();
   if (!isBossChatIndexUrl(currentUrl)) {
     await clickBossSidebarMenuToPath(page, '沟通', '/web/chat/index');
@@ -102,14 +147,116 @@ export async function ensureChatIndexAllFilter(page: Page): Promise<void> {
     { timeout: 12_000 },
   );
 
-  await clickChatFilterTabAll(page);
-  await waitForChatFilterAllSelected(page);
+  await clickChatFilterTab(page, label);
+  await waitForChatFilterSelected(page, label);
   await waitForCandidateListSettled(page, {
     timeoutMs: 14_000,
     pollMsMin: LIST_POLL_MS.min,
     pollMsMax: LIST_POLL_MS.max,
     minMsBeforeEmptyOk: LIST_MIN_BEFORE_EMPTY_OK_MS,
   });
+}
+
+async function scrapeCandidateDomItemsOnCurrentPage(page: Page): Promise<CandidateDomItem[]> {
+  return (await page.evaluate(
+    `(() => {
+      const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+      const stableAttrNames = [
+        "data-geek-id",
+        "data-geekid",
+        "data-uid",
+        "data-user-id",
+        "data-userid",
+        "data-card-id",
+        "data-cardid",
+        "data-id",
+        "data-lid",
+        "data-expect-id",
+        "ka",
+      ];
+      function stableSourceFor(el) {
+        const wrap = el.closest(".geek-item-wrap") ?? el;
+        const nodes = [wrap, el];
+        const pairs = [];
+        for (const node of nodes) {
+          for (const name of stableAttrNames) {
+            const value = node.getAttribute(name);
+            if (value) pairs.push(name + "=" + value);
+          }
+          const id = node.getAttribute("id");
+          if (id) pairs.push("id=" + id);
+        }
+        return pairs.join("|");
+      }
+      return Array.from(document.querySelectorAll(".geek-item")).map((el) => {
+        const name = norm(el.querySelector(".geek-name")?.textContent);
+        const job = norm(el.querySelector(".source-job")?.textContent);
+        const time = norm(el.querySelector(".time")?.textContent);
+        const message = norm(el.querySelector(".push-text")?.textContent);
+        const badge = el.querySelector(".badge-count");
+        let unreadCount = 0;
+        if (badge) {
+          const digits = norm(badge.textContent).replace(/\\D/g, "");
+          if (digits) unreadCount = parseInt(digits, 10) || 0;
+        }
+        return { name, job, time, message, unreadCount, stableSource: stableSourceFor(el) };
+      });
+    })()`,
+  )) as CandidateDomItem[];
+}
+
+export async function listCandidateItemsOnCurrentPage(
+  page: Page,
+  opts: { unreadOnly?: boolean } = {},
+): Promise<CandidateItem[]> {
+  const unreadOnly = opts.unreadOnly === true;
+  const items = await scrapeCandidateDomItemsOnCurrentPage(page);
+  const candidates = items.filter((it) => it.name).map(mapCandidateDomItem);
+  return unreadOnly ? candidates.filter((it) => it.unreadCount > 0) : candidates;
+}
+
+export async function listCandidates(opts: { unreadOnly?: boolean } = {}): Promise<CandidateItem[]> {
+  try {
+    return await withBossSessionPage(async (page) => {
+      await ensureChatIndexAllFilter(page);
+      return listCandidateItemsOnCurrentPage(page, opts);
+    });
+  } catch (e) {
+    if (e instanceof Error) {
+      throw e;
+    }
+    throw new Error(`获取候选人列表失败：${String(e)}`);
+  }
+}
+
+export type CandidateArchiveItem = CandidateItem & {
+  archived: boolean;
+};
+
+export async function listCandidatesIncludingArchived(
+  opts: { unreadOnly?: boolean } = {},
+): Promise<CandidateArchiveItem[]> {
+  try {
+    return await withBossSessionPage(async (page) => {
+      const seen = new Map<string, CandidateArchiveItem>();
+      for (const filter of ['全部', '归档'] as const) {
+        await ensureChatIndexFilter(page, filter);
+        const items = await listCandidateItemsOnCurrentPage(page, opts);
+        for (const item of items) {
+          seen.set(item.bossConversationId, {
+            ...item,
+            archived: filter === '归档',
+          });
+        }
+      }
+      return Array.from(seen.values());
+    });
+  } catch (e) {
+    if (e instanceof Error) {
+      throw e;
+    }
+    throw new Error(`获取含归档候选人列表失败：${String(e)}`);
+  }
 }
 
 export async function runGetCandidateList(
@@ -121,26 +268,8 @@ export async function runGetCandidateList(
     return await withBossSessionPage(async (page) => {
       await ensureChatIndexAllFilter(page);
 
-      const items = (await page.evaluate(
-        `(() => {
-          const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
-          return Array.from(document.querySelectorAll(".geek-item")).map((el) => {
-            const name = norm(el.querySelector(".geek-name")?.textContent);
-            const job = norm(el.querySelector(".source-job")?.textContent);
-            const time = norm(el.querySelector(".time")?.textContent);
-            const message = norm(el.querySelector(".push-text")?.textContent);
-            const badge = el.querySelector(".badge-count");
-            let unreadCount = 0;
-            if (badge) {
-              const digits = norm(badge.textContent).replace(/\\D/g, "");
-              if (digits) unreadCount = parseInt(digits, 10) || 0;
-            }
-            return { name, job, time, message, unreadCount };
-          });
-        })()`,
-      )) as CandidateItem[];
-
-      const candidates = items.filter((it) => it.name) as CandidateItem[];
+      const domItems = await scrapeCandidateDomItemsOnCurrentPage(page);
+      const candidates = domItems.filter((it) => it.name);
       const withUnread = candidates.filter((it) => it.unreadCount > 0).length;
       const visible = unreadOnly ? candidates.filter((it) => it.unreadCount > 0) : candidates;
       const lines = visible.map((it, idx) => {

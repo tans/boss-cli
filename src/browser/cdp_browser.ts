@@ -128,9 +128,10 @@ function waitForDevToolsWebSocketUrl(
 
     const onLine = (line: string) => {
       const m = line.trim().match(CDP_WEBSOCKET_ENDPOINT_REGEX);
-      if (m?.[1]) {
+      const endpoint = m?.[1];
+      if (endpoint) {
         finish(() => {
-          resolve(m[1]);
+          resolve(endpoint);
         });
       }
     };

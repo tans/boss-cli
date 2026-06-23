@@ -1,9 +1,12 @@
 import type {
   AISetting,
   AISettingInput,
+  AutoFilterSetting,
   AutomationLog,
+  BotBehaviorSetting,
   BossAccount,
   Conversation,
+  ConversationAnalysis,
   DashboardSummary,
   JobSetting,
   Message,
@@ -13,29 +16,48 @@ import type {
   WorkingHours,
 } from "@boss/shared";
 
-const API_BASE = import.meta.env.VITE_BOSS_API_BASE ?? "http://localhost:3001";
+const API_BASE = import.meta.env.VITE_BOSS_API_BASE ?? "";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const url = `${API_BASE}${path}`;
+  const response = await fetch(url, {
     ...init,
     headers: {
       "content-type": "application/json",
       ...init?.headers,
     },
   });
-  const data = (await response.json()) as unknown;
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") ?? "";
+  const data = parseJsonResponse(path, response.status, contentType, text);
   if (!response.ok) {
     const message =
       data && typeof data === "object" && "error" in data
         ? String((data as { error: unknown }).error)
-        : `Request failed: ${response.status}`;
+        : `Request failed: ${response.status} ${path}`;
     throw new Error(message);
   }
   return data as T;
 }
 
+function parseJsonResponse(path: string, status: number, contentType: string, text: string): unknown {
+  if (!text.trim()) {
+    throw new Error(`接口 ${path} 返回空响应（HTTP ${status}）。请确认 boss-api 正在运行且 Vite 代理指向正确端口。`);
+  }
+  if (!contentType.includes("application/json")) {
+    throw new Error(`接口 ${path} 返回非 JSON 响应（HTTP ${status}, content-type: ${contentType || "unknown"}）。`);
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`接口 ${path} JSON 解析失败（HTTP ${status}）：${message}`);
+  }
+}
+
 export const api = {
   dashboard: () => request<DashboardSummary>("/api/dashboard"),
+  conversationAnalysis: () => request<ConversationAnalysis>("/api/analytics/conversations"),
   account: () => request<BossAccount>("/api/account"),
   login: () => request<QueueItem>("/api/account/login", { method: "POST" }),
   startListening: () =>
@@ -43,6 +65,12 @@ export const api = {
       method: "POST",
     }),
   stopListening: () => request<BossAccount>("/api/listening/stop", { method: "POST" }),
+  syncUnread: () => request<QueueItem>("/api/queue/sync-unread", { method: "POST" }),
+  syncAllConversations: () =>
+    request<QueueItem>("/api/queue/sync-all-conversations", { method: "POST" }),
+  syncArchivedConversations: () =>
+    request<QueueItem>("/api/queue/sync-archived-conversations", { method: "POST" }),
+  syncPositions: () => request<QueueItem>("/api/queue/sync-positions", { method: "POST" }),
   jobs: () => request<JobSetting[]>("/api/jobs"),
   updateJob: (id: string, body: Partial<Omit<JobSetting, "id">>) =>
     request<JobSetting>(`/api/jobs/${id}`, {
@@ -64,6 +92,18 @@ export const api = {
   workingHours: () => request<WorkingHours>("/api/working-hours"),
   updateWorkingHours: (body: Omit<WorkingHours, "id">) =>
     request<WorkingHours>("/api/working-hours", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  autoFilter: () => request<AutoFilterSetting>("/api/auto-filter"),
+  updateAutoFilter: (body: Omit<AutoFilterSetting, "id">) =>
+    request<AutoFilterSetting>("/api/auto-filter", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  botBehavior: () => request<BotBehaviorSetting>("/api/bot-behavior"),
+  updateBotBehavior: (body: Omit<BotBehaviorSetting, "id" | "updatedAt">) =>
+    request<BotBehaviorSetting>("/api/bot-behavior", {
       method: "PATCH",
       body: JSON.stringify(body),
     }),

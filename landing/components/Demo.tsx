@@ -38,35 +38,34 @@ const examples = [
 
 export default function Demo() {
   return (
-    <section id="examples" className="py-24 px-6 border-t border-slate-800">
+    <section id="examples" className="py-24 px-6 border-t border-green-200">
       <div className="max-w-6xl mx-auto">
-        <h2 className="text-3xl font-bold text-white mb-2">使用示例</h2>
-        <p className="text-slate-400 mb-12">简单直观的命令，强大的招聘自动化能力。</p>
+        <h2 className="text-3xl font-bold text-green-950 mb-8">使用示例</h2>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {examples.map((ex, i) => (
-            <div key={i} className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-              <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-2">
+            <div key={i} className="border border-green-200 rounded-md overflow-hidden">
+              <div className="px-4 py-3 border-b border-green-200 flex items-center gap-2">
                 <div className="flex gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-slate-700"></span>
-                  <span className="w-3 h-3 rounded-full bg-slate-700"></span>
-                  <span className="w-3 h-3 rounded-full bg-slate-700"></span>
+                  <span className="w-3 h-3 rounded-full bg-green-300"></span>
+                  <span className="w-3 h-3 rounded-full bg-green-300"></span>
+                  <span className="w-3 h-3 rounded-full bg-green-300"></span>
                 </div>
-                <span className="text-slate-500 text-xs ml-2">{ex.title}</span>
+                <span className="text-green-700 text-xs ml-2">{ex.title}</span>
               </div>
               <div className="p-4 font-mono text-sm space-y-1.5">
                 {ex.lines.map((line, j) => (
                   <div key={j} className="flex gap-2">
                     {line.prompt
-                      ? <span className="text-teal-500 shrink-0">$</span>
+                      ? <span className="text-green-700 shrink-0">$</span>
                       : <span className="w-3 shrink-0"></span>
                     }
                     <span className={
                       line.prompt
-                        ? 'text-white'
+                        ? 'text-green-950'
                         : (line as { highlight?: boolean }).highlight
-                          ? 'text-teal-400'
-                          : 'text-slate-500'
+                          ? 'text-green-700'
+                          : 'text-green-600'
                     }>
                       {line.text}
                     </span>

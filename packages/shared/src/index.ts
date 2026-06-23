@@ -12,6 +12,8 @@ export type QueueType =
   | "CHECK_LOGIN"
   | "SYNC_POSITIONS"
   | "SYNC_UNREAD"
+  | "SYNC_ALL_CONVERSATIONS"
+  | "SYNC_ARCHIVED_CONVERSATIONS"
   | "PROCESS_CONVERSATION"
   | "SEND_MESSAGE";
 export type LogLevel = "INFO" | "WARN" | "ERROR";
@@ -74,12 +76,32 @@ export type WorkingHours = {
   offHoursTemplate: string;
 };
 
+export type AutoFilterSetting = {
+  id: string;
+  enabled: boolean;
+  minAge: number | null;
+  maxAge: number | null;
+  allowedEducations: string[];
+  rejectMessageTemplate: string;
+};
+
+export type BotBehaviorSetting = {
+  id: string;
+  workerPollMs: number;
+  unreadListenLoopMinMs: number;
+  unreadListenLoopMaxMs: number;
+  archiveOpenDelayMinMs: number;
+  archiveOpenDelayMaxMs: number;
+  updatedAt: string;
+};
+
 export type Conversation = {
   id: string;
   bossConversationId: string;
   candidateName: string;
   jobSettingId: string | null;
   jobName: string | null;
+  archived: boolean;
   status: ConversationStatus;
   messageCount: number;
   wecomSendCount: number;
@@ -107,6 +129,7 @@ export type QueueItem = {
   conversationId: string | null;
   payload: Record<string, unknown>;
   currentStep: string | null;
+  resultMessage: string | null;
   errorMessage: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -127,6 +150,7 @@ export type AutomationLog = {
 
 export type DashboardSummary = {
   account: BossAccount;
+  worker: WorkerHeartbeat;
   queue: QueueItem[];
   metrics: {
     todayConversations: number;
@@ -136,7 +160,37 @@ export type DashboardSummary = {
   };
 };
 
+export type ConversationAnalysis = {
+  totals: {
+    conversations: number;
+    archivedConversations: number;
+    activeConversations: number;
+    messages: number;
+    candidateMessages: number;
+    hrMessages: number;
+    aiMessages: number;
+    wecomSends: number;
+  };
+  byStatus: Array<{
+    status: ConversationStatus;
+    count: number;
+  }>;
+  byJob: Array<{
+    jobName: string;
+    conversationCount: number;
+    messageCount: number;
+    wecomSends: number;
+  }>;
+};
+
 export type ServiceHealth = {
   ok: true;
   service: string;
+};
+
+export type WorkerHeartbeat = {
+  id: string;
+  lastSeenAt: string | null;
+  staleAfterSeconds: number;
+  isAlive: boolean;
 };

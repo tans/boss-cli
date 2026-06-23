@@ -33,34 +33,22 @@ export default function FAQ() {
   const [open, setOpen] = useState<number | null>(null)
 
   return (
-    <section id="faq" className="py-24 px-6 border-t border-slate-800">
+    <section id="faq" className="py-24 px-6 border-t border-green-200">
       <div className="max-w-6xl mx-auto">
-        <h2 className="text-3xl font-bold text-white mb-2">常见问题</h2>
-        <p className="text-slate-400 mb-12">
-          更多问题可在{' '}
-          <a
-            href="https://github.com/joohw/boss-cli/issues"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-teal-400 hover:text-teal-300 transition-colors"
-          >
-            GitHub Issues
-          </a>{' '}
-          提出。
-        </p>
+        <h2 className="text-3xl font-bold text-green-950 mb-8">常见问题</h2>
 
-        <div className="divide-y divide-slate-800 border border-slate-800 rounded-lg overflow-hidden">
+        <div className="divide-y divide-green-200 border-y border-green-200">
           {faqs.map((item, i) => (
             <div key={i}>
               <button
                 onClick={() => setOpen(open === i ? null : i)}
-                className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-slate-900 transition-colors"
+                className="w-full flex items-center justify-between py-4 text-left hover:bg-green-100 transition-colors"
               >
-                <span className="text-white text-sm font-medium">{item.q}</span>
-                <span className="text-slate-500 text-xs ml-4 shrink-0">{open === i ? '-' : '+'}</span>
+                <span className="text-green-950 text-sm font-medium">{item.q}</span>
+                <span className="text-green-700 text-xs ml-4 shrink-0">{open === i ? '-' : '+'}</span>
               </button>
               {open === i && (
-                <div className="px-6 py-4 bg-slate-900/50 text-slate-400 text-sm leading-relaxed border-t border-slate-800">
+                <div className="py-4 text-green-800 text-sm leading-relaxed border-t border-green-200">
                   {item.a}
                 </div>
               )}

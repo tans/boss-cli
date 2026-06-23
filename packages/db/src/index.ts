@@ -5,9 +5,12 @@ import { loadAppConfig } from "@boss/config";
 import type {
   AISetting,
   AISettingInput,
+  AutoFilterSetting,
   AutomationLog,
+  BotBehaviorSetting,
   BossAccount,
   Conversation,
+  ConversationAnalysis,
   ConversationStatus,
   DashboardSummary,
   JobSetting,
@@ -20,6 +23,7 @@ import type {
   QueueType,
   ReplyTemplate,
   ReplyTemplateType,
+  WorkerHeartbeat,
   WorkingHours,
 } from "@boss/shared";
 
@@ -119,12 +123,32 @@ function migrate(db: Database): void {
       off_hours_template TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS auto_filter_setting (
+      id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL,
+      min_age INTEGER,
+      max_age INTEGER,
+      allowed_educations_json TEXT NOT NULL,
+      reject_message_template TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS bot_behavior_setting (
+      id TEXT PRIMARY KEY,
+      worker_poll_ms INTEGER NOT NULL,
+      unread_listen_loop_min_ms INTEGER NOT NULL,
+      unread_listen_loop_max_ms INTEGER NOT NULL,
+      archive_open_delay_min_ms INTEGER NOT NULL DEFAULT 3000,
+      archive_open_delay_max_ms INTEGER NOT NULL DEFAULT 7000,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS conversation (
       id TEXT PRIMARY KEY,
       boss_conversation_id TEXT NOT NULL UNIQUE,
       candidate_name TEXT NOT NULL,
       job_setting_id TEXT REFERENCES job_setting(id),
       job_name TEXT,
+      archived INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL,
       message_count INTEGER NOT NULL DEFAULT 0,
       wecom_send_count INTEGER NOT NULL DEFAULT 0,
@@ -152,6 +176,7 @@ function migrate(db: Database): void {
       conversation_id TEXT REFERENCES conversation(id),
       payload_json TEXT NOT NULL,
       current_step TEXT,
+      result_message TEXT,
       error_message TEXT,
       created_at TEXT NOT NULL,
       started_at TEXT,
@@ -174,7 +199,45 @@ function migrate(db: Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_log_created ON automation_log(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS worker_heartbeat (
+      id TEXT PRIMARY KEY,
+      last_seen_at TEXT NOT NULL
+    );
   `);
+  ensureColumn(db, "queue_item", "result_message", "TEXT");
+  ensureColumn(db, "conversation", "archived", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "bot_behavior_setting", "archive_open_delay_min_ms", "INTEGER NOT NULL DEFAULT 3000");
+  ensureColumn(db, "bot_behavior_setting", "archive_open_delay_max_ms", "INTEGER NOT NULL DEFAULT 7000");
+  ensureColumn(db, "auto_filter_setting", "reject_message_template", "TEXT NOT NULL DEFAULT ''");
+  renameColumnIfPresent(db, "bot_behavior_setting", "listen_loop_min_ms", "unread_listen_loop_min_ms");
+  renameColumnIfPresent(db, "bot_behavior_setting", "listen_loop_max_ms", "unread_listen_loop_max_ms");
+}
+
+function ensureColumn(db: Database, tableName: string, columnName: string, definition: string): void {
+  const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${tableName})`).all();
+  if (rows.some((row) => row.name === columnName)) {
+    return;
+  }
+  db.query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`).run();
+}
+
+function renameColumnIfPresent(
+  db: Database,
+  tableName: string,
+  fromColumnName: string,
+  toColumnName: string,
+): void {
+  const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${tableName})`).all();
+  const hasFrom = rows.some((row) => row.name === fromColumnName);
+  const hasTo = rows.some((row) => row.name === toColumnName);
+  if (!hasFrom) {
+    return;
+  }
+  if (hasTo) {
+    throw new Error(`Cannot rename ${tableName}.${fromColumnName}: ${toColumnName} already exists.`);
+  }
+  db.query(`ALTER TABLE ${tableName} RENAME COLUMN ${fromColumnName} TO ${toColumnName}`).run();
 }
 
 function seedDefaults(db: Database): void {
@@ -228,7 +291,48 @@ function seedDefaults(db: Database): void {
       `INSERT INTO ai_setting (id, model, api_key, prompt, updated_at)
        VALUES ('default', 'gpt-5.5', NULL, ?, ?)`,
     ).run(
-      "你是招聘专员。\n\n目标：\n\n1 回答岗位问题\n2 保持礼貌\n3 引导企业微信\n4 不承诺录用\n5 不讨论敏感内容",
+      [
+        "## AI人设",
+        "你是招聘专员 AI 助手，负责在 BOSS 直聘聊天中协助 HR 与候选人沟通。",
+        "你必须保持简洁、专业、友好，不要表现成客服机器人或销售。",
+        "你只负责岗位咨询、信息收集、初步匹配和引导添加企业微信。",
+        "你不能承诺录用、薪资、面试结果或任何未配置的信息。",
+        "",
+        "## 公司背景",
+        "候选人询问公司信息时，按照公司背景内容进行介绍。",
+        "可以介绍公司业务、招聘流程和岗位方向。",
+        "如果候选人询问未配置的信息，直接说明需要 HR 进一步确认。",
+        "不要编造公司规模、融资、福利、团队人数或办公地址。",
+        "",
+        "## 岗位信息",
+        "候选人问岗位内容时，先概括岗位职责，再询问其相关经验。",
+        "候选人问地点时，回答已配置地点；未配置具体地址时说明以后续 HR 确认为准。",
+        "候选人问薪资时，不承诺具体数字，先询问期望薪资范围。",
+        "候选人问流程时，说明招聘流程，并提示具体安排由 HR 确认。",
+        "",
+        "## 沟通逻辑",
+        "下面是你要开展的工作步骤，请一步一步进行，推动事件发展。",
+        "1. 如果候选人没有提问，先问候选人想了解的岗位或当前求职意向。",
+        "2. 确认岗位后，询问候选人的工作年限、核心技能和最近一段经历。",
+        "3. 如果岗位有城市要求，询问候选人当前所在城市，以及是否接受该城市工作。",
+        "4. 如果候选人提出薪资问题，先询问期望薪资，不直接承诺具体数字。",
+        "5. 当候选人基本匹配且愿意继续沟通时，引导添加企业微信，并提醒备注姓名、岗位和所在地。",
+        "6. 如果候选人问公司或岗位情况，按照公司背景和岗位信息回答；信息不足时直接说明需要 HR 确认。",
+        "7. 如果候选人表达拒绝、不匹配或需要人工处理，礼貌结束或转人工。",
+        "",
+        "## 主动索要信息",
+        "优先收集候选人的目标岗位、工作年限、核心技能、期望薪资、到岗时间、所在城市和简历状态。",
+        "每一轮只问一个最关键的问题，等待候选人回答后再推进下一步。",
+        "候选人已经提供的信息不要重复索要。",
+        "如果候选人提供的信息不完整，明确指出缺少哪一项并继续追问。",
+        "",
+        "## 注意事项",
+        "不编造岗位、薪资、面试结果、录用结果、福利和公司信息。",
+        "不暴露内部评价，不解释详细拒绝原因。",
+        "涉及争议、法律、歧视、强烈情绪、投诉或候选人要求人工时，转人工。",
+        "岗位未配置企业微信时，不生成替代联系方式，应直接暴露配置错误。",
+        "输出只包含要发送给候选人的正文，不输出解释、标签或代码块。",
+      ].join("\n"),
       nowIso(),
     );
   }
@@ -240,6 +344,33 @@ function seedDefaults(db: Database): void {
        (id, timezone, days_json, start, end, off_hours_reply_enabled, off_hours_template)
        VALUES ('default', 'Asia/Shanghai', '[1,2,3,4,5]', '09:00', '18:00', 1, ?)`,
     ).run("您好，\n\n当前为非工作时间。\n\n稍后会有招聘专员联系您。");
+  }
+
+  const filter = db.query("SELECT id FROM auto_filter_setting WHERE id = 'default'").get();
+  if (!filter) {
+    db.query(
+      `INSERT INTO auto_filter_setting
+       (id, enabled, min_age, max_age, allowed_educations_json, reject_message_template)
+       VALUES ('default', 0, NULL, NULL, ?, '')`,
+    ).run(JSON.stringify(["本科", "硕士", "博士"]));
+  }
+
+  const behavior = db.query("SELECT id FROM bot_behavior_setting WHERE id = 'default'").get();
+  if (!behavior) {
+    const config = loadAppConfig();
+    db.query(
+      `INSERT INTO bot_behavior_setting
+       (id, worker_poll_ms, unread_listen_loop_min_ms, unread_listen_loop_max_ms,
+        archive_open_delay_min_ms, archive_open_delay_max_ms, updated_at)
+       VALUES ('default', ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      config.workerPollMs,
+      config.unreadListenLoopMinMs,
+      config.unreadListenLoopMaxMs,
+      3000,
+      7000,
+      nowIso(),
+    );
   }
 }
 
@@ -329,6 +460,25 @@ type WorkingHoursRow = {
   off_hours_template: string;
 };
 
+type AutoFilterSettingRow = {
+  id: string;
+  enabled: number;
+  min_age: number | null;
+  max_age: number | null;
+  allowed_educations_json: string;
+  reject_message_template: string;
+};
+
+type BotBehaviorSettingRow = {
+  id: string;
+  worker_poll_ms: number;
+  unread_listen_loop_min_ms: number;
+  unread_listen_loop_max_ms: number;
+  archive_open_delay_min_ms: number;
+  archive_open_delay_max_ms: number;
+  updated_at: string;
+};
+
 function mapWorkingHours(row: WorkingHoursRow): WorkingHours {
   return {
     id: row.id,
@@ -341,12 +491,36 @@ function mapWorkingHours(row: WorkingHoursRow): WorkingHours {
   };
 }
 
+function mapAutoFilterSetting(row: AutoFilterSettingRow): AutoFilterSetting {
+  return {
+    id: row.id,
+    enabled: fromBool(row.enabled),
+    minAge: row.min_age,
+    maxAge: row.max_age,
+    allowedEducations: JSON.parse(row.allowed_educations_json) as string[],
+    rejectMessageTemplate: row.reject_message_template,
+  };
+}
+
+function mapBotBehaviorSetting(row: BotBehaviorSettingRow): BotBehaviorSetting {
+  return {
+    id: row.id,
+    workerPollMs: row.worker_poll_ms,
+    unreadListenLoopMinMs: row.unread_listen_loop_min_ms,
+    unreadListenLoopMaxMs: row.unread_listen_loop_max_ms,
+    archiveOpenDelayMinMs: row.archive_open_delay_min_ms,
+    archiveOpenDelayMaxMs: row.archive_open_delay_max_ms,
+    updatedAt: row.updated_at,
+  };
+}
+
 type ConversationRow = {
   id: string;
   boss_conversation_id: string;
   candidate_name: string;
   job_setting_id: string | null;
   job_name: string | null;
+  archived: DbBoolean;
   status: ConversationStatus;
   message_count: number;
   wecom_send_count: number;
@@ -363,6 +537,7 @@ function mapConversation(row: ConversationRow): Conversation {
     candidateName: row.candidate_name,
     jobSettingId: row.job_setting_id,
     jobName: row.job_name,
+    archived: fromBool(row.archived),
     status: row.status,
     messageCount: row.message_count,
     wecomSendCount: row.wecom_send_count,
@@ -403,6 +578,7 @@ type QueueItemRow = {
   conversation_id: string | null;
   payload_json: string;
   current_step: string | null;
+  result_message: string | null;
   error_message: string | null;
   created_at: string;
   started_at: string | null;
@@ -418,6 +594,7 @@ function mapQueueItem(row: QueueItemRow): QueueItem {
     conversationId: row.conversation_id,
     payload: parseJsonObject(row.payload_json),
     currentStep: row.current_step,
+    resultMessage: row.result_message,
     errorMessage: row.error_message,
     createdAt: row.created_at,
     startedAt: row.started_at,
@@ -435,6 +612,11 @@ type AutomationLogRow = {
   message: string;
   error_detail: string | null;
   created_at: string;
+};
+
+type WorkerHeartbeatRow = {
+  id: string;
+  last_seen_at: string;
 };
 
 function mapAutomationLog(row: AutomationLogRow): AutomationLog {
@@ -651,9 +833,113 @@ export function updateWorkingHours(input: Omit<WorkingHours, "id">): WorkingHour
   return getWorkingHours();
 }
 
+export function getAutoFilterSetting(): AutoFilterSetting {
+  const row = getDb()
+    .query<AutoFilterSettingRow, []>("SELECT * FROM auto_filter_setting WHERE id = 'default'")
+    .get();
+  if (!row) {
+    throw new Error("Default auto filter setting was not initialized.");
+  }
+  return mapAutoFilterSetting(row);
+}
+
+export function updateAutoFilterSetting(input: Omit<AutoFilterSetting, "id">): AutoFilterSetting {
+  if (input.minAge !== null && input.minAge <= 0) {
+    throw new Error("Auto filter min age must be a positive number.");
+  }
+  if (input.maxAge !== null && input.maxAge <= 0) {
+    throw new Error("Auto filter max age must be a positive number.");
+  }
+  if (input.minAge !== null && input.maxAge !== null && input.minAge > input.maxAge) {
+    throw new Error("Auto filter min age cannot be greater than max age.");
+  }
+  const educations = input.allowedEducations.map((item) => item.trim()).filter(Boolean);
+  const rejectMessageTemplate = input.rejectMessageTemplate.trim();
+  if (input.enabled && !rejectMessageTemplate) {
+    throw new Error("Auto filter reject message template is required when auto filter is enabled.");
+  }
+  getDb()
+    .query(
+      `UPDATE auto_filter_setting
+       SET enabled = ?, min_age = ?, max_age = ?, allowed_educations_json = ?, reject_message_template = ?
+       WHERE id = 'default'`,
+    )
+    .run(
+      bool(input.enabled),
+      input.minAge,
+      input.maxAge,
+      JSON.stringify(educations),
+      rejectMessageTemplate,
+    );
+  return getAutoFilterSetting();
+}
+
+export function getBotBehaviorSetting(): BotBehaviorSetting {
+  const row = getDb()
+    .query<BotBehaviorSettingRow, []>("SELECT * FROM bot_behavior_setting WHERE id = 'default'")
+    .get();
+  if (!row) {
+    throw new Error("Default bot behavior setting was not initialized.");
+  }
+  return mapBotBehaviorSetting(row);
+}
+
+export function updateBotBehaviorSetting(input: Omit<BotBehaviorSetting, "id" | "updatedAt">): BotBehaviorSetting {
+  if (!Number.isInteger(input.workerPollMs) || input.workerPollMs <= 0) {
+    throw new Error("Worker poll interval must be a positive integer.");
+  }
+  if (!Number.isInteger(input.unreadListenLoopMinMs) || input.unreadListenLoopMinMs <= 0) {
+    throw new Error("Unread listen loop minimum interval must be a positive integer.");
+  }
+  if (!Number.isInteger(input.unreadListenLoopMaxMs) || input.unreadListenLoopMaxMs <= 0) {
+    throw new Error("Unread listen loop maximum interval must be a positive integer.");
+  }
+  if (input.unreadListenLoopMinMs > input.unreadListenLoopMaxMs) {
+    throw new Error("Unread listen loop minimum interval cannot be greater than maximum interval.");
+  }
+  if (!Number.isInteger(input.archiveOpenDelayMinMs) || input.archiveOpenDelayMinMs <= 0) {
+    throw new Error("Archive open delay minimum must be a positive integer.");
+  }
+  if (!Number.isInteger(input.archiveOpenDelayMaxMs) || input.archiveOpenDelayMaxMs <= 0) {
+    throw new Error("Archive open delay maximum must be a positive integer.");
+  }
+  if (input.archiveOpenDelayMinMs > input.archiveOpenDelayMaxMs) {
+    throw new Error("Archive open delay minimum cannot be greater than maximum interval.");
+  }
+  getDb()
+    .query(
+      `UPDATE bot_behavior_setting
+       SET worker_poll_ms = ?,
+           unread_listen_loop_min_ms = ?,
+           unread_listen_loop_max_ms = ?,
+           archive_open_delay_min_ms = ?,
+           archive_open_delay_max_ms = ?,
+           updated_at = ?
+       WHERE id = 'default'`,
+    )
+    .run(
+      input.workerPollMs,
+      input.unreadListenLoopMinMs,
+      input.unreadListenLoopMaxMs,
+      input.archiveOpenDelayMinMs,
+      input.archiveOpenDelayMaxMs,
+      nowIso(),
+    );
+  return getBotBehaviorSetting();
+}
+
 export function listConversations(): Conversation[] {
   return getDb()
     .query<ConversationRow, []>("SELECT * FROM conversation ORDER BY updated_at DESC")
+    .all()
+    .map(mapConversation);
+}
+
+export function listArchivedConversations(): Conversation[] {
+  return getDb()
+    .query<ConversationRow, []>(
+      "SELECT * FROM conversation WHERE archived = 1 ORDER BY updated_at DESC",
+    )
     .all()
     .map(mapConversation);
 }
@@ -681,6 +967,7 @@ export function upsertConversation(input: {
   bossConversationId: string;
   candidateName: string;
   jobName?: string | null;
+  archived?: boolean;
   latestMessage?: string | null;
   latestMessageAt?: string | null;
   unreadCount?: number;
@@ -696,12 +983,13 @@ export function upsertConversation(input: {
   getDb()
     .query(
       `INSERT INTO conversation
-       (id, boss_conversation_id, candidate_name, job_setting_id, job_name, status, message_count,
+       (id, boss_conversation_id, candidate_name, job_setting_id, job_name, archived, status, message_count,
         wecom_send_count, latest_message, latest_message_at, human_takeover_at, updated_at)
-       VALUES (?, ?, ?, NULL, ?, ?, 0, 0, ?, ?, NULL, ?)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, 0, 0, ?, ?, NULL, ?)
        ON CONFLICT(boss_conversation_id) DO UPDATE SET
          candidate_name = excluded.candidate_name,
          job_name = excluded.job_name,
+         archived = excluded.archived,
          latest_message = excluded.latest_message,
          latest_message_at = excluded.latest_message_at,
          updated_at = excluded.updated_at`,
@@ -711,6 +999,7 @@ export function upsertConversation(input: {
       input.bossConversationId,
       input.candidateName,
       input.jobName ?? null,
+      bool(input.archived === true),
       nextStatus,
       input.latestMessage ?? null,
       input.latestMessageAt ?? null,
@@ -800,8 +1089,8 @@ export function enqueue(input: {
     .query(
       `INSERT INTO queue_item
        (id, type, status, boss_account_id, conversation_id, payload_json, current_step,
-        error_message, created_at, started_at, finished_at)
-       VALUES (?, ?, 'QUEUED', ?, ?, ?, NULL, NULL, ?, NULL, NULL)`,
+        result_message, error_message, created_at, started_at, finished_at)
+       VALUES (?, ?, 'QUEUED', ?, ?, ?, NULL, NULL, NULL, ?, NULL, NULL)`,
     )
     .run(
       rowId,
@@ -875,6 +1164,28 @@ export function finishQueueItem(queueId: string, status: Exclude<QueueStatus, "Q
   return getQueueItem(queueId);
 }
 
+export function finishQueueItemWithResult(input: {
+  queueId: string;
+  status: Exclude<QueueStatus, "QUEUED" | "RUNNING">;
+  resultMessage?: string | null;
+  errorMessage?: string | null;
+}): QueueItem {
+  getDb()
+    .query(
+      `UPDATE queue_item
+       SET status = ?, result_message = ?, error_message = ?, finished_at = ?
+       WHERE id = ?`,
+    )
+    .run(
+      input.status,
+      input.resultMessage ?? null,
+      input.errorMessage ?? null,
+      nowIso(),
+      input.queueId,
+    );
+  return getQueueItem(input.queueId);
+}
+
 export function insertLog(input: {
   level: LogLevel;
   event: string;
@@ -920,9 +1231,41 @@ export function listLogs(limit = 100): AutomationLog[] {
     .map(mapAutomationLog);
 }
 
+const WORKER_HEARTBEAT_ID = "default";
+const WORKER_STALE_AFTER_SECONDS = 15;
+
+export function recordWorkerHeartbeat(): WorkerHeartbeat {
+  const seenAt = nowIso();
+  getDb()
+    .query(
+      `INSERT INTO worker_heartbeat (id, last_seen_at)
+       VALUES (?, ?)
+       ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+    )
+    .run(WORKER_HEARTBEAT_ID, seenAt);
+  return getWorkerHeartbeat();
+}
+
+export function getWorkerHeartbeat(now = new Date()): WorkerHeartbeat {
+  const row = getDb()
+    .query<WorkerHeartbeatRow, [string]>("SELECT * FROM worker_heartbeat WHERE id = ?")
+    .get(WORKER_HEARTBEAT_ID);
+  const lastSeenAt = row?.last_seen_at ?? null;
+  const isAlive = lastSeenAt
+    ? now.getTime() - new Date(lastSeenAt).getTime() <= WORKER_STALE_AFTER_SECONDS * 1000
+    : false;
+  return {
+    id: WORKER_HEARTBEAT_ID,
+    lastSeenAt,
+    staleAfterSeconds: WORKER_STALE_AFTER_SECONDS,
+    isAlive,
+  };
+}
+
 export function getDashboardSummary(): DashboardSummary {
   return {
     account: getAccount(),
+    worker: getWorkerHeartbeat(),
     queue: listQueue(10),
     metrics: {
       todayConversations: getDb()
@@ -944,5 +1287,101 @@ export function getDashboardSummary(): DashboardSummary {
         )
         .get()?.count ?? 0,
     },
+  };
+}
+
+export function getConversationAnalysis(): ConversationAnalysis {
+  const conversationTotals = getDb()
+    .query<{
+      conversations: number;
+      archived_conversations: number;
+      active_conversations: number;
+      wecom_sends: number;
+    }, []>(
+      `SELECT
+         COUNT(*) AS conversations,
+         COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) AS archived_conversations,
+         COALESCE(SUM(CASE WHEN archived = 0 THEN 1 ELSE 0 END), 0) AS active_conversations,
+         COALESCE(SUM(wecom_send_count), 0) AS wecom_sends
+       FROM conversation`,
+    )
+    .get();
+  if (!conversationTotals) {
+    throw new Error("Conversation analysis totals query returned no row.");
+  }
+
+  const messageTotals = getDb()
+    .query<{
+      messages: number;
+      candidate_messages: number;
+      hr_messages: number;
+      ai_messages: number;
+    }, []>(
+      `SELECT
+         COUNT(*) AS messages,
+         COALESCE(SUM(CASE WHEN sender = 'candidate' THEN 1 ELSE 0 END), 0) AS candidate_messages,
+         COALESCE(SUM(CASE WHEN sender = 'hr' THEN 1 ELSE 0 END), 0) AS hr_messages,
+         COALESCE(SUM(CASE WHEN sender = 'ai' THEN 1 ELSE 0 END), 0) AS ai_messages
+       FROM message`,
+    )
+    .get();
+  if (!messageTotals) {
+    throw new Error("Conversation analysis message totals query returned no row.");
+  }
+
+  const byStatus = getDb()
+    .query<{ status: ConversationStatus; count: number }, []>(
+      `SELECT status, COUNT(*) AS count
+       FROM conversation
+       GROUP BY status
+       ORDER BY count DESC, status ASC`,
+    )
+    .all();
+
+  const byJob = getDb()
+    .query<{
+      job_name: string;
+      conversation_count: number;
+      message_count: number;
+      wecom_sends: number;
+    }, []>(
+      `SELECT
+         job_name,
+         COUNT(*) AS conversation_count,
+         COALESCE(SUM(message_count), 0) AS message_count,
+         COALESCE(SUM(wecom_send_count), 0) AS wecom_sends
+       FROM (
+         SELECT
+           COALESCE(NULLIF(c.job_name, ''), '未识别岗位') AS job_name,
+           c.wecom_send_count,
+           COUNT(m.id) AS message_count
+         FROM conversation c
+         LEFT JOIN message m ON m.conversation_id = c.id
+         GROUP BY c.id
+       ) rows
+       GROUP BY job_name
+       ORDER BY conversation_count DESC, message_count DESC, job_name ASC
+       LIMIT 20`,
+    )
+    .all();
+
+  return {
+    totals: {
+      conversations: conversationTotals.conversations,
+      archivedConversations: conversationTotals.archived_conversations,
+      activeConversations: conversationTotals.active_conversations,
+      messages: messageTotals.messages,
+      candidateMessages: messageTotals.candidate_messages,
+      hrMessages: messageTotals.hr_messages,
+      aiMessages: messageTotals.ai_messages,
+      wecomSends: conversationTotals.wecom_sends,
+    },
+    byStatus,
+    byJob: byJob.map((row) => ({
+      jobName: row.job_name,
+      conversationCount: row.conversation_count,
+      messageCount: row.message_count,
+      wecomSends: row.wecom_sends,
+    })),
   };
 }

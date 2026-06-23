@@ -56,20 +56,17 @@ export default async function BlogPostPage({ params }: PageProps) {
   const jsonLd = buildBlogPostingJsonLd(slug)
 
   return (
-    <div className="bg-slate-950 min-h-screen">
+    <div className="min-h-screen bg-white">
       <StructuredData data={jsonLd} />
       <Navbar />
       <main className="max-w-3xl mx-auto px-6 pt-28 pb-16">
-        <Link href="/blog" className="text-sm text-slate-400 hover:text-white transition-colors">
+        <Link href="/blog" className="text-sm text-green-800 hover:text-green-950 transition-colors">
           ← 返回博客
         </Link>
         <article className="mt-6">
           <header className="mb-8 max-w-none">
-            <h1 className="text-3xl font-bold text-white mb-3">{post.title}</h1>
-            {post.date ? <time className="text-slate-500 text-sm">{post.date}</time> : null}
-            {post.description ? (
-              <p className="mt-4 text-base leading-relaxed text-slate-400">{post.description}</p>
-            ) : null}
+            <h1 className="text-3xl font-bold text-green-950 mb-3">{post.title}</h1>
+            {post.date ? <time className="text-green-700 text-sm">{post.date}</time> : null}
           </header>
           <div className="blog-prose" dangerouslySetInnerHTML={{ __html: html }} />
         </article>

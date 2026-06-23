@@ -57,7 +57,7 @@ function isBossChatJobListUrl(url: string): boolean {
   }
 }
 
-type JobListItem = {
+export type JobListItem = {
   id: string;
   title: string;
   label: string;
@@ -71,6 +71,7 @@ type JobListItem = {
 type JobReadState = {
   rows: number;
   totalText: string;
+  totalCount: number | null;
   title: string;
   url: string;
   bodyPreview: string;
@@ -153,18 +154,58 @@ async function readJobsFromFrame(frame: Frame): Promise<JobReadResult> {
   return (await frame.evaluate(
     `(() => {
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
-      const rows = Array.from(document.querySelectorAll(".job-jobInfo-warp"));
+      const leafTexts = (root) => {
+        if (!root) return [];
+        const out = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const el = node;
+          if (el.querySelector("*")) continue;
+          const text = norm(el.textContent);
+          if (text) out.push(text);
+        }
+        return out;
+      };
+      const parseTotal = (text) => {
+        const m = text.match(/\\d+/);
+        return m ? Number.parseInt(m[0], 10) : null;
+      };
+      const readEncryptId = (el) => {
+        const rawId = norm(el.getAttribute("data-id"));
+        if (rawId) return rawId;
+        const links = Array.from(el.querySelectorAll("a[href], button[data-url], [data-url], [href]"));
+        for (const node of links) {
+          const raw =
+            node.getAttribute("href") ||
+            node.getAttribute("data-url") ||
+            "";
+          if (!raw) continue;
+          try {
+            const url = new URL(raw, location.href);
+            const encryptId = url.searchParams.get("encryptId");
+            if (encryptId) return encryptId;
+            const pathMatch = url.pathname.match(/\\/job\\/(?:detail|edit)\\/([^/?#]+)/);
+            if (pathMatch && pathMatch[1]) return pathMatch[1];
+          } catch (_) {}
+          const inlineMatch = raw.match(/[?&]encryptId=([^&#]+)/);
+          if (inlineMatch && inlineMatch[1]) return decodeURIComponent(inlineMatch[1]);
+        }
+        return "";
+      };
+      const rows = Array.from(document.querySelectorAll(".job-item-container"));
       const jobs = rows.map((el) => {
         const statusText = norm(el.querySelector(".job-status-wrapper .status-box")?.textContent);
         const labelText = norm(el.querySelector(".job-title .label-common")?.textContent);
-        const meta = Array.from(el.querySelectorAll(".job-main-info-wrapper .info-labels span"))
-          .map((x) => norm(x.textContent))
-          .filter(Boolean);
-        const nums = Array.from(el.querySelectorAll(".job-about-num-wrapper .inner-box .num"))
+        const mainInfo = el.querySelector(".job-main-info-wrapper");
+        const meta = leafTexts(mainInfo)
+          .filter((text) => text !== norm(el.querySelector(".job-name")?.textContent))
+          .filter((text) => text !== labelText);
+        const nums = Array.from(el.querySelectorAll(".job-about-num-wrapper .inner-box .num, .job-about-num-wrapper .num"))
           .map((x) => norm(x.textContent));
         return {
-          id: norm(el.getAttribute("data-id")),
-          title: norm(el.querySelector(".job-title a")?.textContent),
+          id: readEncryptId(el),
+          title: norm(el.querySelector(".job-name")?.textContent),
           label: labelText,
           status: statusText,
           meta,
@@ -174,10 +215,12 @@ async function readJobsFromFrame(frame: Frame): Promise<JobReadResult> {
         };
       });
       const totalText = norm(document.querySelector(".total-num")?.textContent);
+      const totalCount = parseTotal(totalText);
       const bodyText = norm(document.body?.innerText ?? "");
       return {
         rows: rows.length,
         totalText,
+        totalCount,
         title: document.title || "",
         url: location.href,
         bodyPreview: bodyText.slice(0, 120),
@@ -191,7 +234,7 @@ async function readJobsFromPageAnyFrame(
   page: Page,
 ): Promise<JobListContext> {
   const main = await readJobsFromFrame(page.mainFrame());
-  if (main.rows > 0 || main.totalText.length > 0) {
+  if (main.rows > 0 || main.totalCount === 0) {
     return {
       frame: page.mainFrame(),
       data: main,
@@ -208,7 +251,37 @@ async function readJobsFromPageAnyFrame(
     }
     try {
       const state = await readJobsFromFrame(frame);
-      if (state.rows > 0 || state.totalText.length > 0) {
+      if (state.rows > 0 || state.totalCount === 0) {
+        return {
+          frame,
+          data: state,
+          fromFrame: true,
+          frameUrl: state.url,
+          mainState: main,
+        };
+      }
+    } catch {
+      // ignore cross-origin / detached frames
+    }
+  }
+
+  if (main.totalText.length > 0) {
+    return {
+      frame: page.mainFrame(),
+      data: main,
+      fromFrame: false,
+      frameUrl: main.url,
+      mainState: main,
+    };
+  }
+
+  for (const frame of frames) {
+    if (frame === page.mainFrame()) {
+      continue;
+    }
+    try {
+      const state = await readJobsFromFrame(frame);
+      if (state.totalText.length > 0) {
         return {
           frame,
           data: state,
@@ -238,7 +311,8 @@ async function waitForJobRowsReady(
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const state = await readJobsFromPageAnyFrame(page);
-    if (state.data.rows > 0 || state.data.totalText.length > 0) {
+    const totalCount = state.data.totalCount;
+    if (state.data.rows > 0 || totalCount === 0) {
       return state;
     }
     await sleepRandom(260, 520);
@@ -249,11 +323,15 @@ async function waitForJobRowsReady(
       '等待职位列表超时',
       `main.rows=${last.mainState.rows}`,
       `main.total="${last.mainState.totalText}"`,
+      `main.totalCount=${last.mainState.totalCount ?? 'unknown'}`,
       `main.title="${last.mainState.title}"`,
       `main.url=${last.mainState.url}`,
       `main.body="${last.mainState.bodyPreview}"`,
       `frameHit=${last.fromFrame ? 'yes' : 'no'}`,
       `frame.url=${last.frameUrl}`,
+      `frame.rows=${last.data.rows}`,
+      `frame.total="${last.data.totalText}"`,
+      `frame.totalCount=${last.data.totalCount ?? 'unknown'}`,
     ].join('；'),
   );
 }
@@ -266,19 +344,20 @@ async function clickEditForJob(frame: Frame, job: JobListItem): Promise<void> {
       const jobId = ${targetId};
       const title = ${targetTitle};
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
-      const rows = Array.from(document.querySelectorAll(".job-jobInfo-warp"));
+      const rows = Array.from(document.querySelectorAll(".job-item-container"));
       let row = null;
       if (jobId) {
         row = rows.find((el) => norm(el.getAttribute("data-id")) === jobId) ?? null;
       }
       if (!row && title) {
         row = rows.find((el) => {
-          const t = norm(el.querySelector(".job-title a")?.textContent);
+          const t = norm(el.querySelector(".job-name")?.textContent);
           return t === title;
         }) ?? null;
       }
       if (!row) return false;
-      const editBtn = row.querySelector(".position-edit");
+      const editBtn = Array.from(row.querySelectorAll(".operation-container .operate-btn"))
+        .find((el) => norm(el.textContent) === "编辑");
       if (!(editBtn instanceof HTMLElement)) return false;
       editBtn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       editBtn.click();
@@ -493,4 +572,86 @@ export async function runListOpenPositions(
     console.error(`[boss-cli] list_open_positions error: ${message}`);
     throw new Error(`获取岗位列表失败：${message}`);
   }
+}
+
+export async function listOpenPositions(
+  deps: Pick<ListOpenPositionsDeps, 'settleWaitMsMin' | 'settleWaitMsMax'> = {},
+): Promise<JobListItem[]> {
+  const settleMin = deps.settleWaitMsMin ?? JD_PAGE_SETTLE_MS.min;
+  const settleMax = deps.settleWaitMsMax ?? JD_PAGE_SETTLE_MS.max;
+
+  return withBossSessionPage(async (page) => {
+    const currentUrl = page.url();
+    if (!isBossChatJobListUrl(currentUrl)) {
+      await clickBossSidebarMenuToPath(page, '职位管理', '/web/chat/job/list');
+      await sleepRandom(settleMin, settleMax);
+    }
+    if (!isBossChatJobListUrl(page.url())) {
+      throw new Error('通过侧边栏“职位管理”进入职位页失败，请确认已登录并可访问 /web/chat/job/list。');
+    }
+    const ready = await waitForJobRowsReady(page, 16_000);
+    return ready.data.jobs.filter((it) => it.title.length > 0);
+  });
+}
+
+async function extractCurrentJobEncryptId(page: Page): Promise<string> {
+  await page.waitForFunction(
+    `(() => {
+      try {
+        const url = new URL(window.location.href);
+        return url.pathname.includes("/web/chat/job/edit") && !!url.searchParams.get("encryptId");
+      } catch {
+        return false;
+      }
+    })()`,
+    { timeout: 12_000 },
+  );
+  const encryptId = await page.evaluate(
+    `(() => {
+      const url = new URL(window.location.href);
+      return url.searchParams.get("encryptId") || "";
+    })()`,
+  );
+  if (typeof encryptId !== 'string' || !encryptId.trim()) {
+    throw new Error(`职位编辑页缺少 encryptId：${page.url()}`);
+  }
+  return encryptId.trim();
+}
+
+export async function listOpenPositionsWithStableIds(
+  deps: Pick<ListOpenPositionsDeps, 'settleWaitMsMin' | 'settleWaitMsMax'> = {},
+): Promise<JobListItem[]> {
+  const settleMin = deps.settleWaitMsMin ?? JD_PAGE_SETTLE_MS.min;
+  const settleMax = deps.settleWaitMsMax ?? JD_PAGE_SETTLE_MS.max;
+
+  return withBossSessionPage(async (page) => {
+    const currentUrl = page.url();
+    if (!isBossChatJobListUrl(currentUrl)) {
+      await clickBossSidebarMenuToPath(page, '职位管理', '/web/chat/job/list');
+      await sleepRandom(settleMin, settleMax);
+    }
+    if (!isBossChatJobListUrl(page.url())) {
+      throw new Error('通过侧边栏“职位管理”进入职位页失败，请确认已登录并可访问 /web/chat/job/list。');
+    }
+
+    const firstReady = await waitForJobRowsReady(page, 16_000);
+    const firstJobs = firstReady.data.jobs.filter((it) => it.title.length > 0);
+    const result: JobListItem[] = [];
+    for (const job of firstJobs) {
+      const listCtx = await waitForJobRowsReady(page, 16_000);
+      const currentJob = resolveTargetJob(listCtx.data.jobs, job.title);
+      if (!currentJob) {
+        throw new Error(`同步职位稳定标识时未找到职位“${job.title}”。`);
+      }
+      await clickEditForJob(listCtx.frame, currentJob);
+      const encryptId = await extractCurrentJobEncryptId(page);
+      result.push({
+        ...job,
+        id: encryptId,
+      });
+      await clickBossSidebarMenuToPath(page, '职位管理', '/web/chat/job/list');
+      await sleepRandom(settleMin, settleMax);
+    }
+    return result;
+  });
 }

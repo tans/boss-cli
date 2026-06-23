@@ -8,8 +8,8 @@ export type AppConfig = {
   apiPort: number;
   databasePath: string;
   workerPollMs: number;
-  listenLoopMinMs: number;
-  listenLoopMaxMs: number;
+  unreadListenLoopMinMs: number;
+  unreadListenLoopMaxMs: number;
 };
 
 function parseRuntimeMode(value: string | undefined): RuntimeMode {
@@ -38,7 +38,7 @@ export function loadAppConfig(): AppConfig {
     databasePath:
       process.env.BOSS_APP_DB_PATH?.trim() || join(homedir(), ".boss-cli", "app.sqlite"),
     workerPollMs: parseIntEnv("BOSS_APP_WORKER_POLL_MS", 3_000),
-    listenLoopMinMs: parseIntEnv("BOSS_APP_LISTEN_LOOP_MIN_MS", 30_000),
-    listenLoopMaxMs: parseIntEnv("BOSS_APP_LISTEN_LOOP_MAX_MS", 90_000),
+    unreadListenLoopMinMs: parseIntEnv("BOSS_APP_UNREAD_LISTEN_LOOP_MIN_MS", 30_000),
+    unreadListenLoopMaxMs: parseIntEnv("BOSS_APP_UNREAD_LISTEN_LOOP_MAX_MS", 90_000),
   };
 }

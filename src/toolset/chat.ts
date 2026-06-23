@@ -1,9 +1,24 @@
 import type { Page } from 'puppeteer-core';
 import { OPEN_CHAT_SCROLL_GAP_MS, sleepRandom } from '../browser/index.js';
 import { isBossChatIndexUrl } from '../common/auth.js';
-import { ensureChatIndexAllFilter } from './list.js';
+import { bossConversationIdFromStableSource, ensureChatIndexFilter, type ChatFilterLabel } from './list.js';
 
 type ChatFrom = 'friend' | 'myself' | 'system' | 'unknown';
+
+export type StructuredChatMessage = {
+  time: string;
+  from: ChatFrom;
+  text: string;
+};
+
+export type StructuredChatSnapshot = {
+  foundName: string;
+  candidateName: string;
+  jobName: string;
+  hasResume: boolean;
+  messages: StructuredChatMessage[];
+  summary: CandidateSummary;
+};
 
 function chatRoleTag(from: ChatFrom): string {
   switch (from) {
@@ -290,34 +305,138 @@ export async function runOpenCandidateChat(
   candidateName: string,
   exact = true,
 ): Promise<string> {
+  const snapshot = await openCandidateChatSnapshot(page, candidateName, exact);
+  const detailLines = snapshot.messages.map((m) => {
+    const tag = chatRoleTag(m.from);
+    const timePart = m.time ? ` ${m.time}` : '';
+    return `${tag}${timePart} ${m.text}`.trimEnd();
+  });
+  const resumeStatus = snapshot.hasResume ? '已获取' : '未获取';
+  const summary = snapshot.summary;
+  const out: string[] = [
+    `成功进入候选人聊天：${snapshot.foundName}`,
+    `简历获取状态: ${resumeStatus}`,
+  ];
+  const summaryLines: string[] = [];
+  const summaryName = summary.name || snapshot.foundName || candidateName;
+  summaryLines.push(`姓名: ${summaryName}`);
+  if (summary.active) {
+    summaryLines.push(`活跃状态: ${summary.active}`);
+  }
+  if (summary.basicFacts.length > 0) {
+    summaryLines.push(`基本信息: ${summary.basicFacts.join(' / ')}`);
+  }
+  if (summary.communicationPosition) {
+    summaryLines.push(`沟通职位: ${summary.communicationPosition}`);
+  }
+  if (summary.expectation) {
+    summaryLines.push(`期望: ${summary.expectation}`);
+  }
+  if (summary.recentExperience.length > 0) {
+    summaryLines.push('近期经历:');
+    summary.recentExperience.forEach((it, idx) => {
+      summaryLines.push(`${idx + 1}. ${it}`);
+    });
+  }
+  if (summaryLines.length > 0) {
+    out.push('', '人才摘要：', '', ...summaryLines);
+  }
+  if (summary.remark) {
+    out.push('', `备注: ${summary.remark}`);
+  }
+  out.push('', '完整聊天消息：');
+  if (detailLines.length > 0) {
+    out.push('', ...detailLines);
+  } else {
+    out.push('', '(暂无)');
+  }
+  return out.join('\n');
+}
+
+export async function openCandidateChatSnapshot(
+  page: Page,
+  candidateName: string,
+  exact = true,
+  bossConversationId?: string,
+  filterLabel: ChatFilterLabel = '全部',
+): Promise<StructuredChatSnapshot> {
   const targetName = candidateName.trim();
 
   try {
-    await ensureChatIndexAllFilter(page);
+    await ensureChatIndexFilter(page, filterLabel);
     if (!isBossChatIndexUrl(page.url())) {
       throw new Error('当前不在沟通列表页（/web/chat/index），无法打开候选人聊天。');
     }
 
-    const norm = (v: string | null | undefined) => (v ?? '').replace(/\s+/g, ' ').trim();
-    const matcher = (value: string) =>
-      exact ? value === targetName : value.includes(targetName);
     let targetWrap: Awaited<ReturnType<typeof page.$>> | null = null;
     let foundName = '';
+    let foundIndex = -1;
+    let lastVisibleRows: Array<{ index: number; name: string; stableId: string }> = [];
 
     const maxScrollRounds = 40;
     for (let round = 0; round < maxScrollRounds && !targetWrap; round++) {
       const wraps = await page.$$('.geek-item-wrap');
-      for (const wrap of wraps) {
-        const nameText = await wrap
-          .$eval('.geek-name', (el) => (el.textContent ?? '').trim())
-          .catch(() => '');
-        const candidate = norm(nameText);
-        if (!candidate) continue;
-        if (matcher(candidate)) {
-          targetWrap = wrap;
-          foundName = candidate;
-          break;
-        }
+      const matchArgs = JSON.stringify({ targetName, exact });
+      const visibleRows = (await page.evaluate(
+        `(() => {
+          const args = ${matchArgs};
+          const targetName = args.targetName;
+          const exact = args.exact;
+          const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
+          const stableAttrNames = [
+            "data-geek-id",
+            "data-geekid",
+            "data-uid",
+            "data-user-id",
+            "data-userid",
+            "data-card-id",
+            "data-cardid",
+            "data-id",
+            "data-lid",
+            "data-expect-id",
+            "ka",
+          ];
+          function stableSourceFor(wrap) {
+            const row = wrap.querySelector(".geek-item") ?? wrap;
+            const nodes = [wrap, row];
+            const pairs = [];
+            for (const node of nodes) {
+              for (const name of stableAttrNames) {
+                const value = node.getAttribute(name);
+                if (value) pairs.push(name + "=" + value);
+              }
+              const id = node.getAttribute("id");
+              if (id) pairs.push("id=" + id);
+            }
+            return pairs.join("|");
+          }
+          const wraps = Array.from(document.querySelectorAll(".geek-item-wrap"));
+          const out = [];
+          for (let index = 0; index < wraps.length; index++) {
+            const wrap = wraps[index];
+            const name = norm(wrap.querySelector(".geek-name")?.textContent);
+            if (!name) continue;
+            const stableSource = stableSourceFor(wrap);
+            const nameMatched = exact ? name === targetName : name.includes(targetName);
+            out.push({ index, name, stableSource, nameMatched });
+          }
+          return out;
+        })()`,
+      )) as Array<{ index: number; name: string; stableSource: string; nameMatched: boolean }>;
+      lastVisibleRows = visibleRows.map((row) => ({
+        index: row.index,
+        name: row.name,
+        stableId: row.stableSource.trim()
+          ? bossConversationIdFromStableSource(row.stableSource)
+          : "",
+      }));
+      const visibleMatch = bossConversationId
+        ? lastVisibleRows.find((row) => row.stableId === bossConversationId)
+        : visibleRows.find((row) => row.nameMatched);
+      if (visibleMatch) {
+        targetWrap = wraps[visibleMatch.index] ?? null;
+        foundName = visibleMatch.name;
+        foundIndex = visibleMatch.index;
       }
       if (targetWrap) break;
 
@@ -353,14 +472,29 @@ export async function runOpenCandidateChat(
     }
 
     if (!targetWrap) {
-      throw new Error(`未在聊天列表中找到候选人：${targetName}`);
+      const preview = lastVisibleRows
+        .slice(0, 8)
+        .map((row) => `${row.index}:${row.name}:${row.stableId}`)
+        .join("｜");
+      throw new Error(
+        `未在聊天列表中找到候选人：${targetName}，目标会话=${bossConversationId ?? "按姓名匹配"}，可见行=${preview || "空"}`,
+      );
     }
 
-    await targetWrap.evaluate(`((el) => {
-      const row = el.querySelector(".geek-item") ?? el;
+    const clickIndex = JSON.stringify(foundIndex);
+    const clickedTarget = (await page.evaluate(`(() => {
+      const index = ${clickIndex};
+      const wrap = document.querySelectorAll(".geek-item-wrap")[index];
+      if (!wrap) return false;
+      const row = wrap.querySelector(".geek-item") ?? wrap;
       row.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       row.click();
-    })`);
+      return true;
+    })()`)) as boolean;
+    if (!clickedTarget) {
+      throw new Error(`已定位候选人 ${foundName}，但点击列表行失败。`);
+    }
 
     let selected = await targetWrap
       .$eval('.geek-item', (el) => el.classList.contains('selected'))
@@ -402,11 +536,7 @@ export async function runOpenCandidateChat(
       );
     }
 
-    let fullMessages: Array<{
-      time: string;
-      from: ChatFrom;
-      text: string;
-    }> = [];
+    let fullMessages: StructuredChatMessage[] = [];
     let hasFriendResumeAttachment = false;
     const scraped = (await page.evaluate(`(() => {
       const norm = (v) => (v ?? "").replace(/\\s+/g, " ").trim();
@@ -468,53 +598,15 @@ export async function runOpenCandidateChat(
     fullMessages = scraped.messages;
     hasFriendResumeAttachment = scraped.hasFriendResumeAttachment;
 
-    const detailLines = fullMessages.map((m) => {
-      const tag = chatRoleTag(m.from);
-      const timePart = m.time ? ` ${m.time}` : '';
-      return `${tag}${timePart} ${m.text}`.trimEnd();
-    });
-
-    const resumeStatus = hasFriendResumeAttachment ? '已获取' : '未获取';
     const summary = await fetchCandidateSummary(page);
-
-    const out: string[] = [
-      `成功进入候选人聊天：${foundName}`,
-      `简历获取状态: ${resumeStatus}`,
-    ];
-    const summaryLines: string[] = [];
-    const summaryName = summary.name || foundName || targetName;
-    summaryLines.push(`姓名: ${summaryName}`);
-    if (summary.active) {
-      summaryLines.push(`活跃状态: ${summary.active}`);
-    }
-    if (summary.basicFacts.length > 0) {
-      summaryLines.push(`基本信息: ${summary.basicFacts.join(' / ')}`);
-    }
-    if (summary.communicationPosition) {
-      summaryLines.push(`沟通职位: ${summary.communicationPosition}`);
-    }
-    if (summary.expectation) {
-      summaryLines.push(`期望: ${summary.expectation}`);
-    }
-    if (summary.recentExperience.length > 0) {
-      summaryLines.push('近期经历:');
-      summary.recentExperience.forEach((it, idx) => {
-        summaryLines.push(`${idx + 1}. ${it}`);
-      });
-    }
-    if (summaryLines.length > 0) {
-      out.push('', '人才摘要：', '', ...summaryLines);
-    }
-    if (summary.remark) {
-      out.push('', `备注: ${summary.remark}`);
-    }
-    out.push('', '完整聊天消息：');
-    if (detailLines.length > 0) {
-      out.push('', ...detailLines);
-    } else {
-      out.push('', '(暂无)');
-    }
-    return out.join('\n');
+    return {
+      foundName,
+      candidateName: summary.name || foundName || targetName,
+      jobName: summary.communicationPosition,
+      hasResume: hasFriendResumeAttachment,
+      messages: fullMessages,
+      summary,
+    };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (e instanceof Error) {

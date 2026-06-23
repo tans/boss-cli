@@ -26,27 +26,23 @@ export default function BlogIndexPage() {
   const posts = getAllBlogPosts()
 
   return (
-    <div className="bg-slate-950 min-h-screen">
+    <div className="min-h-screen bg-white">
       <Navbar />
       <main className="max-w-3xl mx-auto px-6 pt-28 pb-16">
-        <h1 className="text-3xl font-bold text-white mb-3">博客</h1>
-        <p className="text-slate-400 mb-10">Boss直聘招聘自动化教程、HR 效率技巧与产品实践。</p>
+        <h1 className="text-3xl font-bold text-green-950 mb-10">博客</h1>
 
         {posts.length === 0 ? (
-          <p className="text-slate-500">暂无文章。</p>
+          <p className="text-green-700">暂无文章。</p>
         ) : (
           <ul className="space-y-4">
             {posts.map((post) => (
               <li key={post.slug}>
                 <Link
                   href={`/blog/${post.slug}`}
-                  className="block rounded-lg border border-slate-800 p-5 transition-colors hover:border-slate-700"
+                  className="block rounded-md border border-green-200 p-5 transition-colors hover:border-green-400"
                 >
-                  {post.date ? <time className="text-xs text-slate-500">{post.date}</time> : null}
-                  <h2 className="mt-2 text-xl font-semibold text-white">{post.title}</h2>
-                  {post.description ? (
-                    <p className="mt-2 text-sm leading-relaxed text-slate-400">{post.description}</p>
-                  ) : null}
+                  {post.date ? <time className="text-xs text-green-700">{post.date}</time> : null}
+                  <h2 className="mt-2 text-xl font-semibold text-green-950">{post.title}</h2>
                 </Link>
               </li>
             ))}
