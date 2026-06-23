@@ -33,6 +33,11 @@
     "url": "https://github.com/joohw/boss-cli/issues"
   },
   "type": "module",
+  "packageManager": "bun@1.3.6",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "main": "dist/cli/index.js",
   "types": "dist/cli/index.d.ts",
   "bin": {
@@ -48,6 +53,10 @@
   "scripts": {
     "build": "tsc",
     "dev": "npm run build && node dist/cli/index.js",
+    "app:api": "bun --cwd apps/api dev",
+    "app:web": "bun --cwd apps/web dev",
+    "app:worker": "bun --cwd apps/worker dev",
+    "app:type-check": "bun --filter './apps/*' --filter './packages/*' type-check",
     "deploy": "node scripts/deploy.mjs",
     "test:baidu": "node --env-file=.env scripts/test-baidu-ocr.mjs"
   },
