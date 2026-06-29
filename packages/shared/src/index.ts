@@ -1,5 +1,5 @@
 export type LoginStatus = "UNKNOWN" | "LOGGED_OUT" | "LOGGED_IN" | "EXPIRED" | "BLOCKED";
-export type ListeningStatus = "STOPPED" | "RUNNING";
+export type ListeningStatus = "STOPPED" | "RUNNING" | "RUN_ONCE";
 export type ConversationStatus =
   | "NEW"
   | "ACTIVE"
@@ -15,9 +15,23 @@ export type QueueType =
   | "SYNC_ALL_CONVERSATIONS"
   | "SYNC_ARCHIVED_CONVERSATIONS"
   | "PROCESS_CONVERSATION"
-  | "SEND_MESSAGE";
+  | "SEND_MESSAGE"
+  | "RUN_DAILY_SOP";
 export type LogLevel = "INFO" | "WARN" | "ERROR";
 export type MessageSender = "candidate" | "ai" | "hr" | "system";
+export type SopStepAction =
+  | "CHECK_LOGIN"
+  | "SYNC_POSITIONS"
+  | "SYNC_UNREAD"
+  | "SYNC_ALL_CONVERSATIONS"
+  | "SYNC_ARCHIVED_CONVERSATIONS"
+  | "PROCESS_UNREAD_CONVERSATIONS"
+  | "REFRESH_JOBS"
+  | "GREET_CANDIDATES"
+  | "REVIEW_RESUMES"
+  | "INVITE_INTERVIEW"
+  | "REVIEW_ANALYTICS"
+  | "PRIVATE_DOMAIN_SYNC";
 export type ReplyTemplateType =
   | "WELCOME"
   | "JOB_INTRO"
@@ -55,6 +69,7 @@ export type ReplyTemplate = {
 export type AISetting = {
   id: string;
   model: string;
+  baseUrl: string;
   apiKeySet: boolean;
   prompt: string;
   updatedAt: string;
@@ -62,8 +77,40 @@ export type AISetting = {
 
 export type AISettingInput = {
   model: string;
+  baseUrl: string;
   apiKey?: string;
   prompt: string;
+};
+
+export type BossChatMessage = {
+  sender: MessageSender;
+  text: string;
+  sentAt: string | null;
+  sourceHash: string;
+};
+
+export type BossChatSnapshot = {
+  candidateName: string;
+  jobName: string | null;
+  basicFacts: string[];
+  messages: BossChatMessage[];
+  hasResume: boolean;
+};
+
+export type ChatTestInput = {
+  candidateName: string;
+  jobName: string;
+  wecomId: string;
+  wecomSendCount: number;
+  latestCandidateText: string;
+  snapshot: BossChatSnapshot;
+};
+
+export type ChatTestResult = {
+  kind: "reply" | "escalate";
+  text?: string;
+  reason?: string;
+  wecomIncluded?: boolean;
 };
 
 export type WorkingHours = {
@@ -94,6 +141,39 @@ export type BotBehaviorSetting = {
   archiveOpenDelayMaxMs: number;
   updatedAt: string;
 };
+
+export type SopHumanBehaviorSetting = {
+  stepDelayMinMs: number;
+  stepDelayMaxMs: number;
+  batchDelayMinMs: number;
+  batchDelayMaxMs: number;
+  resumeViewMinMs: number;
+  resumeViewMaxMs: number;
+  replyTargetMinutes: number;
+};
+
+export type SopStep = {
+  id: string;
+  time: string;
+  title: string;
+  action: SopStepAction;
+  enabled: boolean;
+  jobKeywords: string[];
+  batchSize: number;
+  dailyLimit: number;
+  notes: string;
+};
+
+export type SopSetting = {
+  id: string;
+  enabled: boolean;
+  timezone: string;
+  humanBehavior: SopHumanBehaviorSetting;
+  steps: SopStep[];
+  updatedAt: string;
+};
+
+export type SopSettingInput = Omit<SopSetting, "id" | "updatedAt">;
 
 export type Conversation = {
   id: string;
@@ -134,6 +214,12 @@ export type QueueItem = {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+};
+
+export type QueueRunOnceResult = {
+  ran: boolean;
+  queueItem: QueueItem | null;
+  message: string;
 };
 
 export type AutomationLog = {

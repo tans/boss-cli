@@ -3,16 +3,19 @@ import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Elysia, t } from "elysia";
 import { cors } from "@elysiajs/cors";
+import { AiReplyAgent } from "@boss/core";
 import { loadAppConfig } from "@boss/config";
 import {
   enqueue,
   getAccount,
   getAISetting,
+  getAISettingSecret,
   getAutoFilterSetting,
   getConversationAnalysis,
   getBotBehaviorSetting,
   getConversation,
   getDashboardSummary,
+  getSopSetting,
   getWorkingHours,
   insertLog,
   listConversations,
@@ -27,12 +30,15 @@ import {
   updateBotBehaviorSetting,
   updateJob,
   updateListeningStatus,
+  updateSopSetting,
   updateTemplate,
   updateWorkingHours,
 } from "@boss/db";
+import type { ChatTestInput, ChatTestResult, SopSettingInput } from "@boss/shared";
 
 const config = loadAppConfig();
 const webDistDir = fileURLToPath(new URL("../../web/dist", import.meta.url));
+const aiReplyAgent = new AiReplyAgent();
 
 const mimeTypes: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
@@ -58,6 +64,37 @@ function omitUndefined<T extends Record<string, unknown>>(input: T): Partial<T> 
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined),
   ) as Partial<T>;
+}
+
+async function runChatTest(input: ChatTestInput): Promise<ChatTestResult> {
+  const aiSetting = getAISettingSecret();
+  const result = await aiReplyAgent.chat(
+    {
+      candidateName: input.candidateName,
+      jobName: input.jobName,
+      wecomId: input.wecomId,
+      wecomSendCount: input.wecomSendCount,
+      chatRules: aiSetting.prompt,
+      latestCandidateText: input.latestCandidateText,
+      snapshot: input.snapshot,
+    },
+    {
+      apiKey: aiSetting.api_key,
+      model: aiSetting.model,
+      baseUrl: aiSetting.base_url,
+    },
+  );
+  if (result.kind === "escalate") {
+    return {
+      kind: result.kind,
+      reason: result.reason,
+    };
+  }
+  return {
+    kind: result.kind,
+    text: result.text,
+    wecomIncluded: result.wecomIncluded,
+  };
 }
 
 function staticResponse(
@@ -113,20 +150,13 @@ const app = new Elysia()
   })
   .post("/api/listening/start", () => {
     const account = updateListeningStatus("RUNNING");
-    const queueItem = enqueue({
-      type: "SYNC_UNREAD",
-      payload: {
-        source: "start-listening",
-      },
-    });
     insertLog({
       level: "INFO",
       event: "listening-started",
       bossAccountId: "default",
-      queueItemId: queueItem.id,
-      message: "监听已启动，已创建一次未读同步任务。",
+      message: "监听已启动；后续将按未读监听间隔创建同步任务。",
     });
-    return { account, queueItem };
+    return account;
   })
   .post("/api/listening/stop", () => {
     const account = updateListeningStatus("STOPPED");
@@ -135,6 +165,16 @@ const app = new Elysia()
       event: "listening-stopped",
       bossAccountId: "default",
       message: "监听将在当前原子步骤结束后停止。",
+    });
+    return account;
+  })
+  .post("/api/queue/run-once", () => {
+    const account = updateListeningStatus("RUN_ONCE");
+    insertLog({
+      level: "INFO",
+      event: "queue-run-once-requested",
+      bossAccountId: "default",
+      message: "已请求 worker 单次执行最早的排队任务。",
     });
     return account;
   })
@@ -248,8 +288,41 @@ const app = new Elysia()
     {
       body: t.Object({
         model: t.String(),
+        baseUrl: t.String(),
         apiKey: t.Optional(t.String()),
         prompt: t.String(),
+      }),
+    },
+  )
+  .post(
+    "/api/ai-settings/chat-test",
+    ({ body }) => runChatTest(body),
+    {
+      body: t.Object({
+        candidateName: t.String(),
+        jobName: t.String(),
+        wecomId: t.String(),
+        wecomSendCount: t.Number(),
+        latestCandidateText: t.String(),
+        snapshot: t.Object({
+          candidateName: t.String(),
+          jobName: t.Nullable(t.String()),
+          basicFacts: t.Array(t.String()),
+          hasResume: t.Boolean(),
+          messages: t.Array(
+            t.Object({
+              sender: t.Union([
+                t.Literal("candidate"),
+                t.Literal("ai"),
+                t.Literal("hr"),
+                t.Literal("system"),
+              ]),
+              text: t.String(),
+              sentAt: t.Nullable(t.String()),
+              sourceHash: t.String(),
+            }),
+          ),
+        }),
       }),
     },
   )
@@ -296,6 +369,72 @@ const app = new Elysia()
       }),
     },
   )
+  .get("/api/sop", () => getSopSetting())
+  .patch(
+    "/api/sop",
+    ({ body }) => updateSopSetting(body as SopSettingInput),
+    {
+      body: t.Object({
+        enabled: t.Boolean(),
+        timezone: t.String(),
+        humanBehavior: t.Object({
+          stepDelayMinMs: t.Number(),
+          stepDelayMaxMs: t.Number(),
+          batchDelayMinMs: t.Number(),
+          batchDelayMaxMs: t.Number(),
+          resumeViewMinMs: t.Number(),
+          resumeViewMaxMs: t.Number(),
+          replyTargetMinutes: t.Number(),
+        }),
+        steps: t.Array(
+          t.Object({
+            id: t.String(),
+            time: t.String(),
+            title: t.String(),
+            action: t.Union([
+              t.Literal("CHECK_LOGIN"),
+              t.Literal("SYNC_POSITIONS"),
+              t.Literal("SYNC_UNREAD"),
+              t.Literal("SYNC_ALL_CONVERSATIONS"),
+              t.Literal("SYNC_ARCHIVED_CONVERSATIONS"),
+              t.Literal("PROCESS_UNREAD_CONVERSATIONS"),
+              t.Literal("REFRESH_JOBS"),
+              t.Literal("GREET_CANDIDATES"),
+              t.Literal("REVIEW_RESUMES"),
+              t.Literal("INVITE_INTERVIEW"),
+              t.Literal("REVIEW_ANALYTICS"),
+              t.Literal("PRIVATE_DOMAIN_SYNC"),
+            ]),
+            enabled: t.Boolean(),
+            jobKeywords: t.Array(t.String()),
+            batchSize: t.Number(),
+            dailyLimit: t.Number(),
+            notes: t.String(),
+          }),
+        ),
+      }),
+    },
+  )
+  .post("/api/sop/run", () => {
+    const setting = getSopSetting();
+    if (!setting.enabled) {
+      throw new Error("SOP is disabled and cannot be enqueued.");
+    }
+    const queueItem = enqueue({
+      type: "RUN_DAILY_SOP",
+      payload: {
+        source: "manual-run-sop",
+      },
+    });
+    insertLog({
+      level: "INFO",
+      event: "sop-run-enqueued",
+      bossAccountId: "default",
+      queueItemId: queueItem.id,
+      message: "已创建每日 SOP 执行队列任务。",
+    });
+    return queueItem;
+  })
   .get("/api/conversations", () => listConversations())
   .get("/api/conversations/:id", ({ params }) => ({
     conversation: getConversation(params.id),

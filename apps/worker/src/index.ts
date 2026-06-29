@@ -7,6 +7,8 @@ import {
   getAISettingSecret,
   getAutoFilterSetting,
   getBotBehaviorSetting,
+  getConversationAnalysis,
+  getSopSetting,
   getConversation,
   getWorkingHours,
   incrementWecomSendCount,
@@ -16,16 +18,17 @@ import {
   listJobs,
   listTemplates,
   recordWorkerHeartbeat,
+  resetListeningStatusOnStartup,
   setConversationStatus,
   updateAccountStatus,
   updateQueueStep,
+  updateListeningStatus,
   upsertConversation,
   upsertJob,
 } from "@boss/db";
-import type { Conversation, QueueItem, ReplyTemplateType } from "@boss/shared";
-import { AiReplyAgent } from "./ai-reply-agent.js";
+import { AiReplyAgent } from "@boss/core";
+import type { BossChatSnapshot, Conversation, QueueItem, ReplyTemplateType, SopStep } from "@boss/shared";
 import {
-  type BossChatSnapshot,
   listAllConversations,
   listPositions,
   listUnreadConversations,
@@ -34,7 +37,8 @@ import {
   sendMessage,
 } from "./boss-bridge.js";
 
-let lastListenEnqueueAt = 0;
+let lastListenEnqueueAt = Date.now();
+let previousListeningStatus = "STOPPED";
 const BEHAVIOR_REFRESH_GRANULARITY_MS = 1_000;
 const aiReplyAgent = new AiReplyAgent();
 
@@ -56,6 +60,18 @@ async function sleepUntilNextWorkerTick(startedAtMs: number): Promise<void> {
 
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+async function sleepHumanDelay(
+  queueItem: QueueItem,
+  label: string,
+  minMs: number,
+  maxMs: number,
+): Promise<number> {
+  const delayMs = randomInt(minMs, maxMs);
+  updateQueueStep(queueItem.id, `${label}-${delayMs}ms`);
+  await sleep(delayMs);
+  return delayMs;
 }
 
 function errorMessage(error: unknown): string {
@@ -511,6 +527,7 @@ async function sendAiReply(
     {
       apiKey: aiSetting.api_key,
       model: aiSetting.model,
+      baseUrl: aiSetting.base_url,
     },
   );
 
@@ -630,6 +647,88 @@ async function runSendMessage(queueItem: QueueItem): Promise<string> {
   return `已发送消息：${text.slice(0, 80)}`;
 }
 
+async function runSopStep(queueItem: QueueItem, step: SopStep): Promise<string> {
+  switch (step.action) {
+    case "CHECK_LOGIN":
+      return runCheckLogin(queueItem);
+    case "SYNC_POSITIONS":
+      return runSyncPositions(queueItem);
+    case "SYNC_UNREAD":
+    case "PROCESS_UNREAD_CONVERSATIONS":
+      return runSyncUnread(queueItem);
+    case "SYNC_ALL_CONVERSATIONS":
+      return runSyncAllConversations(queueItem);
+    case "SYNC_ARCHIVED_CONVERSATIONS":
+      return runSyncArchivedConversations(queueItem);
+    case "REVIEW_ANALYTICS": {
+      updateQueueStep(queueItem.id, `sop-review-analytics-${step.id}`);
+      const analysis = getConversationAnalysis();
+      return [
+        `会话 ${analysis.totals.conversations}`,
+        `活跃 ${analysis.totals.activeConversations}`,
+        `归档 ${analysis.totals.archivedConversations}`,
+        `消息 ${analysis.totals.messages}`,
+        `企微 ${analysis.totals.wecomSends}`,
+      ].join("；");
+    }
+    case "REFRESH_JOBS":
+      throw new Error(`SOP 步骤「${step.title}」需要岗位刷新底层能力，当前仅支持岗位同步。`);
+    case "GREET_CANDIDATES":
+      throw new Error(`SOP 步骤「${step.title}」需要主动打招呼底层能力，当前 worker 未接入。`);
+    case "REVIEW_RESUMES":
+      throw new Error(`SOP 步骤「${step.title}」需要简历批量浏览底层能力，当前 worker 未接入。`);
+    case "INVITE_INTERVIEW":
+      throw new Error(`SOP 步骤「${step.title}」需要面试邀约底层能力，当前 worker 未接入。`);
+    case "PRIVATE_DOMAIN_SYNC":
+      throw new Error(`SOP 步骤「${step.title}」需要私域系统同步能力，当前 worker 未接入。`);
+    default:
+      throw new Error(`Unsupported SOP action: ${step.action satisfies never}`);
+  }
+}
+
+async function runDailySop(queueItem: QueueItem): Promise<string> {
+  const setting = getSopSetting();
+  if (!setting.enabled) {
+    throw new Error("SOP is disabled.");
+  }
+  const enabledSteps = setting.steps
+    .filter((step) => step.enabled)
+    .sort((a, b) => a.time.localeCompare(b.time));
+  if (enabledSteps.length === 0) {
+    throw new Error("SOP has no enabled steps.");
+  }
+
+  const results: string[] = [];
+  for (const [index, step] of enabledSteps.entries()) {
+    updateQueueStep(queueItem.id, `sop-step-${index + 1}-of-${enabledSteps.length}-${step.id}`);
+    insertLog({
+      level: "INFO",
+      event: "sop-step-started",
+      bossAccountId: queueItem.bossAccountId,
+      queueItemId: queueItem.id,
+      message: `开始 SOP 步骤 ${step.time} ${step.title}（${step.action}），批量 ${step.batchSize}，日限 ${step.dailyLimit}。`,
+    });
+    if (index > 0) {
+      await sleepHumanDelay(
+        queueItem,
+        `sop-step-delay-${step.id}`,
+        setting.humanBehavior.stepDelayMinMs,
+        setting.humanBehavior.stepDelayMaxMs,
+      );
+    }
+    const result = await runSopStep(queueItem, step);
+    results.push(`${step.time} ${step.title}: ${result}`);
+    insertLog({
+      level: "INFO",
+      event: "sop-step-succeeded",
+      bossAccountId: queueItem.bossAccountId,
+      queueItemId: queueItem.id,
+      message: `完成 SOP 步骤 ${step.time} ${step.title}：${result}`,
+    });
+  }
+  return `每日 SOP 完成 ${enabledSteps.length} 步：${results.join(" | ")}`;
+}
+
 async function runQueueItem(queueItem: QueueItem): Promise<string> {
   insertLog({
     level: "INFO",
@@ -655,17 +754,25 @@ async function runQueueItem(queueItem: QueueItem): Promise<string> {
       return runProcessConversation(queueItem);
     case "SEND_MESSAGE":
       return runSendMessage(queueItem);
+    case "RUN_DAILY_SOP":
+      return runDailySop(queueItem);
     default:
       throw new Error(`Unsupported queue type: ${queueItem.type satisfies never}`);
   }
 }
 
-async function workerTick(): Promise<void> {
-  recordWorkerHeartbeat();
-  await maybeEnqueueListeningSync();
+async function executeNextQueueItem(trigger: "continuous" | "run-once"): Promise<boolean> {
   const queueItem = claimNextQueueItem();
   if (!queueItem) {
-    return;
+    if (trigger === "run-once") {
+      insertLog({
+        level: "INFO",
+        event: "queue-run-once-empty",
+        bossAccountId: "default",
+        message: "单次执行未找到排队任务。",
+      });
+    }
+    return false;
   }
   try {
     const resultMessage = await runQueueItem(queueItem);
@@ -682,6 +789,7 @@ async function workerTick(): Promise<void> {
       queueItemId: queueItem.id,
       message: `队列任务完成：${queueItem.type}；${resultMessage}`,
     });
+    return true;
   } catch (error) {
     const message = errorMessage(error);
     finishQueueItem(queueItem.id, "FAILED", message);
@@ -694,10 +802,39 @@ async function workerTick(): Promise<void> {
       message: `队列任务失败：${queueItem.type}`,
       errorDetail: message,
     });
+    return true;
   }
 }
 
-console.log("boss-worker ready");
+async function workerTick(): Promise<void> {
+  recordWorkerHeartbeat();
+  const account = getAccount();
+  if (account.listeningStatus !== previousListeningStatus) {
+    previousListeningStatus = account.listeningStatus;
+    if (account.listeningStatus === "RUNNING") {
+      lastListenEnqueueAt = Date.now();
+    }
+  }
+  if (account.listeningStatus === "STOPPED") {
+    return;
+  }
+  if (account.listeningStatus === "RUN_ONCE") {
+    await executeNextQueueItem("run-once");
+    updateListeningStatus("STOPPED");
+    return;
+  }
+  await maybeEnqueueListeningSync();
+  await executeNextQueueItem("continuous");
+}
+
+resetListeningStatusOnStartup();
+insertLog({
+  level: "INFO",
+  event: "worker-started-stopped",
+  bossAccountId: "default",
+  message: "Worker 已启动，默认保持停止状态；请在页面手动启动监听或执行单次队列任务。",
+});
+console.log("boss-worker ready: manual start required");
 
 for (;;) {
   const tickStartedAtMs = Date.now();

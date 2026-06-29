@@ -8,6 +8,7 @@ import { withBossSessionPage } from "../../../src/common/boss_session_page.js";
 import { listOpenPositionsWithStableIds } from "../../../src/toolset/jd.js";
 import { listCandidates, listCandidatesIncludingArchived } from "../../../src/toolset/list.js";
 import { openCandidateChatSnapshot } from "../../../src/toolset/chat.js";
+import type { BossChatMessage, BossChatSnapshot } from "@boss/shared";
 
 export type BossListItem = {
   bossConversationId: string;
@@ -18,21 +19,6 @@ export type BossListItem = {
   unreadCount: number;
   latestMessage: string | null;
   latestMessageAt: string | null;
-};
-
-export type BossChatMessage = {
-  sender: "candidate" | "ai" | "hr" | "system";
-  text: string;
-  sentAt: string | null;
-  sourceHash: string;
-};
-
-export type BossChatSnapshot = {
-  candidateName: string;
-  jobName: string | null;
-  basicFacts: string[];
-  messages: BossChatMessage[];
-  hasResume: boolean;
 };
 
 export type BossPosition = {

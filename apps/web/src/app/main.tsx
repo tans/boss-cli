@@ -29,6 +29,7 @@ import type {
   AISetting,
   AutomationLog,
   BotBehaviorSetting,
+  BossChatMessage,
   Conversation,
   ConversationAnalysis,
   ConversationStatus,
@@ -37,6 +38,9 @@ import type {
   Message,
   QueueItem,
   QueueStatus,
+  SopSetting,
+  SopStep,
+  SopStepAction,
   WorkingHours,
 } from "@boss/shared";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -106,6 +110,7 @@ type PageId =
   | "jobs"
   | "rules"
   | "autoFilter"
+  | "sop"
   | "ai"
   | "behavior"
   | "analytics"
@@ -119,6 +124,7 @@ const navItems = [
   { id: "conversations", label: "会话中心", icon: MessageSquareTextIcon },
   { id: "jobs", label: "岗位管理", icon: BriefcaseBusinessIcon },
   { id: "rules", label: "聊天规则", icon: FileTextIcon },
+  { id: "sop", label: "每日SOP", icon: RouteIcon },
   { id: "autoFilter", label: "自动筛选", icon: Settings2Icon },
   { id: "ai", label: "AI设置", icon: BotIcon },
   { id: "behavior", label: "机器人行为", icon: Settings2Icon },
@@ -130,6 +136,7 @@ const pageTitles: Record<PageId, string> = {
   dashboard: "仪表盘",
   jobs: "岗位管理",
   rules: "聊天规则",
+  sop: "每日SOP",
   autoFilter: "自动筛选",
   ai: "AI设置",
   behavior: "机器人行为",
@@ -272,7 +279,8 @@ function App() {
   const [activePage, setActivePage] = useState<PageId>("dashboard");
   const dashboard = useResource(api.dashboard, [], 3000);
   const title = pageTitles[activePage];
-  const listening = dashboard.data?.account.listeningStatus === "RUNNING";
+  const listeningStatus = dashboard.data?.account.listeningStatus ?? "STOPPED";
+  const listening = listeningStatus !== "STOPPED";
 
   return (
     <StrictMode>
@@ -313,7 +321,7 @@ function App() {
             <SidebarFooter>
               <div className="flex flex-col gap-2 p-2">
                 <Badge variant={listening ? "default" : "secondary"} className="w-fit">
-                  {listening ? "监听中" : "已停止"}
+                  {listeningStatus === "RUNNING" ? "监听中" : listeningStatus === "RUN_ONCE" ? "单次执行中" : "已停止"}
                 </Badge>
               </div>
             </SidebarFooter>
@@ -333,6 +341,7 @@ function App() {
               )}
               {activePage === "jobs" && <JobsPage />}
               {activePage === "rules" && <RulesPage />}
+              {activePage === "sop" && <SopPage />}
               {activePage === "autoFilter" && <AutoFilterPage />}
               {activePage === "ai" && <AIPage />}
               {activePage === "behavior" && <BotBehaviorPage />}
@@ -399,6 +408,9 @@ function DashboardSummaryCard({
   refresh: () => Promise<void>;
 }) {
   const account = summary?.account ?? null;
+  const listeningStatus = account?.listeningStatus ?? "STOPPED";
+  const listeningRunning = listeningStatus === "RUNNING";
+  const listeningBusy = listeningStatus === "RUN_ONCE";
 
   return (
     <Card>
@@ -426,8 +438,8 @@ function DashboardSummaryCard({
           <CompactStat label="AI回复" value={String(summary?.metrics.todayAiReplies ?? 0)} />
           <CompactStatus
             label="监听"
-            value={account?.listeningStatus === "RUNNING" ? "运行中" : "已停止"}
-            active={account?.listeningStatus === "RUNNING"}
+            value={listeningRunning ? "运行中" : listeningBusy ? "单次执行中" : "已停止"}
+            active={listeningStatus !== "STOPPED"}
           />
           <CompactStatus label="Worker" value={workerAlive ? "online" : "offline"} active={workerAlive} />
         </div>
@@ -445,8 +457,10 @@ function DashboardSummaryCard({
             重新登录
           </Button>
           <Button
+            disabled={listeningRunning}
             onClick={async () => {
               await api.startListening();
+              toast.success("监听已启动");
               await refresh();
             }}
           >
@@ -455,13 +469,27 @@ function DashboardSummaryCard({
           </Button>
           <Button
             variant="secondary"
+            disabled={listeningStatus === "STOPPED"}
             onClick={async () => {
               await api.stopListening();
+              toast.success("监听已停止");
               await refresh();
             }}
           >
             <PauseIcon data-icon="inline-start" />
             停止监听
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={listeningBusy}
+            onClick={async () => {
+              await api.runQueueOnce();
+              toast.success("已请求单次执行一个排队任务");
+              await refresh();
+            }}
+          >
+            <PlayIcon data-icon="inline-start" />
+            单次执行
           </Button>
           <Button
             variant="secondary"
@@ -822,17 +850,64 @@ function AutoFilterPage() {
 function AIPage() {
   const resource = useResource(api.aiSettings, [], 5000);
   const [model, setModel] = useState("gpt-5.5");
+  const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [testCandidateName, setTestCandidateName] = useState("测试候选人");
+  const [testJobName, setTestJobName] = useState("前端工程师");
+  const [testWecomId, setTestWecomId] = useState("wecom-test");
+  const [testMessage, setTestMessage] = useState("你好，我想了解一下这个岗位主要做什么？");
+  const [testHistory, setTestHistory] = useState("候选人：你好，我想了解一下这个岗位主要做什么？");
+  const [testResult, setTestResult] = useState("");
+  const [testRunning, setTestRunning] = useState(false);
 
   useEffect(() => {
     if (!resource.data) return;
     setModel(resource.data.model);
+    setBaseUrl(resource.data.baseUrl);
     setPrompt(resource.data.prompt);
     setApiKey("");
   }, [resource.data]);
 
   if (resource.error) return <ErrorAlert message={resource.error} />;
+
+  const saveAISettings = async (successMessage: string) => {
+    await api.updateAISettings(apiKey ? { model, baseUrl, prompt, apiKey } : { model, baseUrl, prompt });
+    toast.success(successMessage);
+    await resource.refresh();
+  };
+
+  const parseTestHistory = (history: string): BossChatMessage[] => {
+    return history
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line, index) => {
+        const match = /^(候选人|HR|AI|系统)[:：](.*)$/u.exec(line);
+        if (!match) {
+          throw new Error(`测试聊天记录第 ${index + 1} 行格式错误，请使用“候选人：内容”或“HR：内容”。`);
+        }
+        const senderText = match[1]!;
+        const sender =
+          senderText === "候选人"
+            ? "candidate"
+            : senderText === "HR"
+              ? "hr"
+              : senderText === "AI"
+                ? "ai"
+                : "system";
+        const text = match[2]!.trim();
+        if (!text) {
+          throw new Error(`测试聊天记录第 ${index + 1} 行内容为空。`);
+        }
+        return {
+          sender,
+          text,
+          sentAt: null,
+          sourceHash: `chat-test-${index}`,
+        };
+      });
+  };
 
   return (
     <div className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
@@ -843,19 +918,22 @@ function AIPage() {
         <CardContent>
           <FieldGroup>
             <Field>
-              <FieldLabel>模型</FieldLabel>
-              <Select value={model} onValueChange={setModel}>
-                <SelectTrigger>
-                  <SelectValue placeholder="选择模型" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="gpt-5.5">gpt-5.5</SelectItem>
-                    <SelectItem value="gpt-5">gpt-5</SelectItem>
-                    <SelectItem value="gpt-4.1">gpt-4.1</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
+              <FieldLabel htmlFor="model">模型</FieldLabel>
+              <Input
+                id="model"
+                placeholder="例如 qwen-plus、deepseek-chat"
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="base-url">接口地址</FieldLabel>
+              <Input
+                id="base-url"
+                placeholder="https://your-openai-compatible-host/v1"
+                value={baseUrl}
+                onChange={(event) => setBaseUrl(event.target.value)}
+              />
             </Field>
             <Field>
               <FieldLabel htmlFor="api-key">API Key</FieldLabel>
@@ -869,6 +947,11 @@ function AIPage() {
             </Field>
           </FieldGroup>
         </CardContent>
+        <CardFooter>
+          <Button onClick={() => saveAISettings("模型配置已保存")}>
+            保存模型配置
+          </Button>
+        </CardFooter>
       </Card>
       <Card>
         <CardHeader>
@@ -881,14 +964,105 @@ function AIPage() {
           </Field>
         </CardContent>
         <CardFooter>
+          <Button onClick={() => saveAISettings("系统 Prompt 已保存")}>
+            保存 Prompt
+          </Button>
+        </CardFooter>
+      </Card>
+      <Card className="xl:col-span-2">
+        <CardHeader>
+          <CardTitle>聊天测试</CardTitle>
+          <CardDescription>模拟候选人聊天，测试当前 Agent 处理结果，不发送真实消息。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <FieldGroup>
+            <div className="grid gap-3 md:grid-cols-3">
+              <Field>
+                <FieldLabel htmlFor="test-candidate-name">候选人</FieldLabel>
+                <Input
+                  id="test-candidate-name"
+                  value={testCandidateName}
+                  onChange={(event) => setTestCandidateName(event.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="test-job-name">岗位</FieldLabel>
+                <Input
+                  id="test-job-name"
+                  value={testJobName}
+                  onChange={(event) => setTestJobName(event.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="test-wecom-id">企业微信</FieldLabel>
+                <Input
+                  id="test-wecom-id"
+                  value={testWecomId}
+                  onChange={(event) => setTestWecomId(event.target.value)}
+                />
+              </Field>
+            </div>
+            <Field>
+              <FieldLabel htmlFor="test-message">用户最新输入</FieldLabel>
+              <Input
+                id="test-message"
+                value={testMessage}
+                onChange={(event) => setTestMessage(event.target.value)}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="test-history">模拟聊天记录</FieldLabel>
+              <Textarea
+                id="test-history"
+                className="min-h-36"
+                value={testHistory}
+                onChange={(event) => setTestHistory(event.target.value)}
+              />
+            </Field>
+            {testResult ? (
+              <Field>
+                <FieldLabel htmlFor="test-result">测试结果</FieldLabel>
+                <Textarea id="test-result" className="min-h-32" value={testResult} readOnly />
+              </Field>
+            ) : null}
+          </FieldGroup>
+        </CardContent>
+        <CardFooter>
           <Button
+            disabled={testRunning}
             onClick={async () => {
-              await api.updateAISettings(apiKey ? { model, prompt, apiKey } : { model, prompt });
-              toast.success("AI 设置已保存");
-              await resource.refresh();
+              setTestRunning(true);
+              setTestResult("");
+              try {
+                const messages = parseTestHistory(testHistory);
+                const result = await api.runChatTest({
+                  candidateName: testCandidateName,
+                  jobName: testJobName,
+                  wecomId: testWecomId,
+                  wecomSendCount: 0,
+                  latestCandidateText: testMessage,
+                  snapshot: {
+                    candidateName: testCandidateName,
+                    jobName: testJobName,
+                    basicFacts: [],
+                    hasResume: false,
+                    messages,
+                  },
+                });
+                if (result.kind === "escalate") {
+                  setTestResult(`转人工：${result.reason}`);
+                  return;
+                }
+                setTestResult(result.text ?? "");
+              } catch (error) {
+                setTestResult(`错误：${error instanceof Error ? error.message : String(error)}`);
+              } finally {
+                setTestRunning(false);
+              }
             }}
           >
-            保存设置
+            {testRunning ? <Loader2Icon data-icon="inline-start" className="animate-spin" /> : <MessageSquareTextIcon data-icon="inline-start" />}
+            运行测试
           </Button>
         </CardFooter>
       </Card>
@@ -1044,6 +1218,270 @@ function BotBehaviorPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+const sopActionLabels: Record<SopStepAction, string> = {
+  CHECK_LOGIN: "账号签到",
+  SYNC_POSITIONS: "同步岗位",
+  SYNC_UNREAD: "同步未读",
+  SYNC_ALL_CONVERSATIONS: "同步全部沟通",
+  SYNC_ARCHIVED_CONVERSATIONS: "同步归档记录",
+  PROCESS_UNREAD_CONVERSATIONS: "处理未读",
+  REFRESH_JOBS: "刷新岗位",
+  GREET_CANDIDATES: "主动打招呼",
+  REVIEW_RESUMES: "浏览简历",
+  INVITE_INTERVIEW: "面试邀约",
+  REVIEW_ANALYTICS: "数据复盘",
+  PRIVATE_DOMAIN_SYNC: "私域同步",
+};
+
+const sopActions = Object.keys(sopActionLabels) as SopStepAction[];
+
+function SopPage() {
+  const resource = useResource(api.sop, [], 5000);
+  const [draft, setDraft] = useState<SopSetting | null>(null);
+
+  useEffect(() => {
+    if (!resource.data) return;
+    setDraft(structuredClone(resource.data));
+  }, [resource.data]);
+
+  if (resource.error) return <ErrorAlert message={resource.error} />;
+  if (!draft) return <Card><CardHeader><CardTitle>加载中</CardTitle></CardHeader></Card>;
+
+  const parseMs = (label: string, value: number): number => {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(`${label}必须是正整数。`);
+    }
+    return value;
+  };
+  const updateStep = (index: number, patch: Partial<SopStep>) => {
+    const steps = draft.steps.map((step, itemIndex) =>
+      itemIndex === index ? { ...step, ...patch } : step,
+    );
+    setDraft({ ...draft, steps });
+  };
+  const toNumber = (value: string) => Number.parseInt(value.trim(), 10);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle>每日 SOP</CardTitle>
+              <CardDescription>按固定步骤编排现有队列能力，参数用于控制执行节奏。</CardDescription>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  await api.runSop();
+                  toast("已创建每日 SOP 执行队列任务");
+                }}
+              >
+                <PlayIcon data-icon="inline-start" />
+                立即运行
+              </Button>
+              <Button
+                onClick={async () => {
+                  const next = {
+                    enabled: draft.enabled,
+                    timezone: draft.timezone,
+                    humanBehavior: {
+                      stepDelayMinMs: parseMs("步骤最小延时", draft.humanBehavior.stepDelayMinMs),
+                      stepDelayMaxMs: parseMs("步骤最大延时", draft.humanBehavior.stepDelayMaxMs),
+                      batchDelayMinMs: parseMs("批次最小延时", draft.humanBehavior.batchDelayMinMs),
+                      batchDelayMaxMs: parseMs("批次最大延时", draft.humanBehavior.batchDelayMaxMs),
+                      resumeViewMinMs: parseMs("简历浏览最小时长", draft.humanBehavior.resumeViewMinMs),
+                      resumeViewMaxMs: parseMs("简历浏览最大时长", draft.humanBehavior.resumeViewMaxMs),
+                      replyTargetMinutes: parseMs("回复目标分钟", draft.humanBehavior.replyTargetMinutes),
+                    },
+                    steps: draft.steps,
+                  };
+                  await api.updateSop(next);
+                  toast.success("SOP 已保存");
+                  await resource.refresh();
+                }}
+              >
+                保存 SOP
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-4 xl:grid-cols-[0.75fr_1.25fr]">
+            <FieldGroup>
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldTitle>启用 SOP</FieldTitle>
+                </FieldContent>
+                <Switch checked={draft.enabled} onCheckedChange={(enabled) => setDraft({ ...draft, enabled })} />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="sop-timezone">时区</FieldLabel>
+                <Input
+                  id="sop-timezone"
+                  value={draft.timezone}
+                  onChange={(event) => setDraft({ ...draft, timezone: event.target.value })}
+                />
+              </Field>
+              <div className="grid gap-4 md:grid-cols-2">
+                <NumberField
+                  id="sop-step-delay-min"
+                  label="步骤最小延时（ms）"
+                  value={draft.humanBehavior.stepDelayMinMs}
+                  onChange={(value) => setDraft({ ...draft, humanBehavior: { ...draft.humanBehavior, stepDelayMinMs: value } })}
+                />
+                <NumberField
+                  id="sop-step-delay-max"
+                  label="步骤最大延时（ms）"
+                  value={draft.humanBehavior.stepDelayMaxMs}
+                  onChange={(value) => setDraft({ ...draft, humanBehavior: { ...draft.humanBehavior, stepDelayMaxMs: value } })}
+                />
+                <NumberField
+                  id="sop-batch-delay-min"
+                  label="批次最小延时（ms）"
+                  value={draft.humanBehavior.batchDelayMinMs}
+                  onChange={(value) => setDraft({ ...draft, humanBehavior: { ...draft.humanBehavior, batchDelayMinMs: value } })}
+                />
+                <NumberField
+                  id="sop-batch-delay-max"
+                  label="批次最大延时（ms）"
+                  value={draft.humanBehavior.batchDelayMaxMs}
+                  onChange={(value) => setDraft({ ...draft, humanBehavior: { ...draft.humanBehavior, batchDelayMaxMs: value } })}
+                />
+                <NumberField
+                  id="sop-resume-view-min"
+                  label="简历浏览最小时长（ms）"
+                  value={draft.humanBehavior.resumeViewMinMs}
+                  onChange={(value) => setDraft({ ...draft, humanBehavior: { ...draft.humanBehavior, resumeViewMinMs: value } })}
+                />
+                <NumberField
+                  id="sop-resume-view-max"
+                  label="简历浏览最大时长（ms）"
+                  value={draft.humanBehavior.resumeViewMaxMs}
+                  onChange={(value) => setDraft({ ...draft, humanBehavior: { ...draft.humanBehavior, resumeViewMaxMs: value } })}
+                />
+              </div>
+              <NumberField
+                id="sop-reply-target"
+                label="咨询回复目标（分钟）"
+                value={draft.humanBehavior.replyTargetMinutes}
+                onChange={(value) => setDraft({ ...draft, humanBehavior: { ...draft.humanBehavior, replyTargetMinutes: value } })}
+              />
+            </FieldGroup>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>启用</TableHead>
+                  <TableHead>时间</TableHead>
+                  <TableHead>步骤</TableHead>
+                  <TableHead>动作</TableHead>
+                  <TableHead>批量</TableHead>
+                  <TableHead>日限</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {draft.steps.map((step, index) => (
+                  <TableRow key={step.id}>
+                    <TableCell>
+                      <Switch checked={step.enabled} onCheckedChange={(enabled) => updateStep(index, { enabled })} />
+                    </TableCell>
+                    <TableCell>
+                      <Input className="w-24" value={step.time} onChange={(event) => updateStep(index, { time: event.target.value })} />
+                    </TableCell>
+                    <TableCell>
+                      <div className="grid gap-2">
+                        <Input value={step.title} onChange={(event) => updateStep(index, { title: event.target.value })} />
+                        <Input
+                          value={step.jobKeywords.join("、")}
+                          onChange={(event) => updateStep(index, { jobKeywords: event.target.value.split(/[、,，]/u).map((item) => item.trim()).filter(Boolean) })}
+                          placeholder="岗位关键词"
+                        />
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Select value={step.action} onValueChange={(value) => updateStep(index, { action: value as SopStepAction })}>
+                        <SelectTrigger className="w-40">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {sopActions.map((action) => (
+                              <SelectItem key={action} value={action}>{sopActionLabels[action]}</SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        className="w-20"
+                        inputMode="numeric"
+                        value={String(step.batchSize)}
+                        onChange={(event) => updateStep(index, { batchSize: toNumber(event.target.value) })}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        className="w-20"
+                        inputMode="numeric"
+                        value={String(step.dailyLimit)}
+                        onChange={(event) => updateStep(index, { dailyLimit: toNumber(event.target.value) })}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>步骤备注</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-2">
+          {draft.steps.map((step, index) => (
+            <Field key={step.id}>
+              <FieldLabel htmlFor={`sop-note-${step.id}`}>{step.time} {step.title}</FieldLabel>
+              <Textarea
+                id={`sop-note-${step.id}`}
+                className="min-h-24"
+                value={step.notes}
+                onChange={(event) => updateStep(index, { notes: event.target.value })}
+              />
+            </Field>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function NumberField({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <Field>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Input
+        id={id}
+        inputMode="numeric"
+        value={String(value)}
+        onChange={(event) => onChange(Number.parseInt(event.target.value.trim(), 10))}
+      />
+    </Field>
   );
 }
 
@@ -1598,7 +2036,7 @@ function ChatRuleCard({
             disabled={!aiSetting}
             onClick={async () => {
               if (!aiSetting) return;
-              await api.updateAISettings({ model: aiSetting.model, prompt });
+              await api.updateAISettings({ model: aiSetting.model, baseUrl: aiSetting.baseUrl, prompt });
               toast.success("聊天规则已保存");
               await refresh();
             }}

@@ -23,6 +23,11 @@ import type {
   QueueType,
   ReplyTemplate,
   ReplyTemplateType,
+  SopHumanBehaviorSetting,
+  SopSetting,
+  SopSettingInput,
+  SopStep,
+  SopStepAction,
   WorkerHeartbeat,
   WorkingHours,
 } from "@boss/shared";
@@ -56,6 +61,14 @@ function parseJsonObject(value: string | null): Record<string, unknown> {
     throw new Error("Queue payload must be a JSON object.");
   }
   return parsed as Record<string, unknown>;
+}
+
+function parseJsonArray(value: string, context: string): unknown[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${context} must be a JSON array.`);
+  }
+  return parsed;
 }
 
 export function getDb(): Database {
@@ -108,6 +121,7 @@ function migrate(db: Database): void {
     CREATE TABLE IF NOT EXISTS ai_setting (
       id TEXT PRIMARY KEY,
       model TEXT NOT NULL,
+      base_url TEXT NOT NULL,
       api_key TEXT,
       prompt TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -139,6 +153,21 @@ function migrate(db: Database): void {
       unread_listen_loop_max_ms INTEGER NOT NULL,
       archive_open_delay_min_ms INTEGER NOT NULL DEFAULT 3000,
       archive_open_delay_max_ms INTEGER NOT NULL DEFAULT 7000,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sop_setting (
+      id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL,
+      timezone TEXT NOT NULL,
+      step_delay_min_ms INTEGER NOT NULL,
+      step_delay_max_ms INTEGER NOT NULL,
+      batch_delay_min_ms INTEGER NOT NULL,
+      batch_delay_max_ms INTEGER NOT NULL,
+      resume_view_min_ms INTEGER NOT NULL,
+      resume_view_max_ms INTEGER NOT NULL,
+      reply_target_minutes INTEGER NOT NULL,
+      steps_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
 
@@ -210,6 +239,7 @@ function migrate(db: Database): void {
   ensureColumn(db, "bot_behavior_setting", "archive_open_delay_min_ms", "INTEGER NOT NULL DEFAULT 3000");
   ensureColumn(db, "bot_behavior_setting", "archive_open_delay_max_ms", "INTEGER NOT NULL DEFAULT 7000");
   ensureColumn(db, "auto_filter_setting", "reject_message_template", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "ai_setting", "base_url", "TEXT NOT NULL DEFAULT ''");
   renameColumnIfPresent(db, "bot_behavior_setting", "listen_loop_min_ms", "unread_listen_loop_min_ms");
   renameColumnIfPresent(db, "bot_behavior_setting", "listen_loop_max_ms", "unread_listen_loop_max_ms");
 }
@@ -288,8 +318,8 @@ function seedDefaults(db: Database): void {
   const ai = db.query("SELECT id FROM ai_setting WHERE id = 'default'").get();
   if (!ai) {
     db.query(
-      `INSERT INTO ai_setting (id, model, api_key, prompt, updated_at)
-       VALUES ('default', 'gpt-5.5', NULL, ?, ?)`,
+      `INSERT INTO ai_setting (id, model, base_url, api_key, prompt, updated_at)
+       VALUES ('default', 'gpt-5.5', '', NULL, ?, ?)`,
     ).run(
       [
         "## AI人设",
@@ -372,6 +402,100 @@ function seedDefaults(db: Database): void {
       nowIso(),
     );
   }
+
+  const sop = db.query("SELECT id FROM sop_setting WHERE id = 'default'").get();
+  if (!sop) {
+    db.query(
+      `INSERT INTO sop_setting
+       (id, enabled, timezone, step_delay_min_ms, step_delay_max_ms, batch_delay_min_ms,
+        batch_delay_max_ms, resume_view_min_ms, resume_view_max_ms, reply_target_minutes,
+        steps_json, updated_at)
+       VALUES ('default', 1, 'Asia/Shanghai', 3000, 9000, 60000, 180000,
+        30000, 45000, 3, ?, ?)`,
+    ).run(JSON.stringify(defaultSopSteps()), nowIso());
+  }
+}
+
+function defaultSopSteps(): SopStep[] {
+  return [
+    {
+      id: "morning-login",
+      time: "08:00",
+      title: "全矩阵账号签到",
+      action: "CHECK_LOGIN",
+      enabled: true,
+      jobKeywords: [],
+      batchSize: 1,
+      dailyLimit: 1,
+      notes: "PC + 手机双端登录由人工确认，本系统检查 Boss Web 会话。",
+    },
+    {
+      id: "core-jobs-refresh",
+      time: "10:00",
+      title: "刷新核心转化岗位",
+      action: "SYNC_POSITIONS",
+      enabled: true,
+      jobKeywords: ["核心", "转化"],
+      batchSize: 5,
+      dailyLimit: 30,
+      notes: "同步岗位状态，为后续沟通和复盘提供最新岗位数据。",
+    },
+    {
+      id: "noon-consulting",
+      time: "12:00",
+      title: "处理上午咨询",
+      action: "PROCESS_UNREAD_CONVERSATIONS",
+      enabled: true,
+      jobKeywords: [],
+      batchSize: 10,
+      dailyLimit: 50,
+      notes: "目标 3 分钟极速回复，处理未读并复聊未聊完候选人。",
+    },
+    {
+      id: "long-tail-jobs",
+      time: "16:30",
+      title: "刷新宝妈、兼职长尾岗位",
+      action: "SYNC_POSITIONS",
+      enabled: true,
+      jobKeywords: ["宝妈", "兼职", "长尾"],
+      batchSize: 5,
+      dailyLimit: 30,
+      notes: "定向沟通弹性求职人群，底层岗位刷新能力接入前先同步岗位数据。",
+    },
+    {
+      id: "evening-peak",
+      time: "20:30",
+      title: "晚间流量高峰全岗位刷新",
+      action: "SYNC_ALL_CONVERSATIONS",
+      enabled: true,
+      jobKeywords: [],
+      batchSize: 15,
+      dailyLimit: 80,
+      notes: "同步全部沟通，集中处理未读候选人。",
+    },
+    {
+      id: "daily-review",
+      time: "22:30",
+      title: "数据复盘",
+      action: "REVIEW_ANALYTICS",
+      enabled: true,
+      jobKeywords: [],
+      batchSize: 1,
+      dailyLimit: 1,
+      notes: "复盘曝光、投递、回复率、投诉记录；零曝光岗位下架需接入岗位运营能力。",
+    },
+    {
+      id: "private-domain-sync",
+      time: "22:45",
+      title: "私域同步归集",
+      action: "PRIVATE_DOMAIN_SYNC",
+      enabled: false,
+      jobKeywords: [],
+      batchSize: 1,
+      dailyLimit: 1,
+      notes: "归集当日线索、打标签、设置次日跟进提醒；接入私域系统后启用。",
+    },
+  ];
 }
 
 type BossAccountRow = {
@@ -435,6 +559,7 @@ function mapReplyTemplate(row: ReplyTemplateRow): ReplyTemplate {
 type AISettingRow = {
   id: string;
   model: string;
+  base_url: string;
   api_key: string | null;
   prompt: string;
   updated_at: string;
@@ -444,6 +569,7 @@ function mapAISetting(row: AISettingRow): AISetting {
   return {
     id: row.id,
     model: row.model,
+    baseUrl: row.base_url,
     apiKeySet: !!row.api_key,
     prompt: row.prompt,
     updatedAt: row.updated_at,
@@ -476,6 +602,21 @@ type BotBehaviorSettingRow = {
   unread_listen_loop_max_ms: number;
   archive_open_delay_min_ms: number;
   archive_open_delay_max_ms: number;
+  updated_at: string;
+};
+
+type SopSettingRow = {
+  id: string;
+  enabled: number;
+  timezone: string;
+  step_delay_min_ms: number;
+  step_delay_max_ms: number;
+  batch_delay_min_ms: number;
+  batch_delay_max_ms: number;
+  resume_view_min_ms: number;
+  resume_view_max_ms: number;
+  reply_target_minutes: number;
+  steps_json: string;
   updated_at: string;
 };
 
@@ -512,6 +653,122 @@ function mapBotBehaviorSetting(row: BotBehaviorSettingRow): BotBehaviorSetting {
     archiveOpenDelayMaxMs: row.archive_open_delay_max_ms,
     updatedAt: row.updated_at,
   };
+}
+
+function mapSopSetting(row: SopSettingRow): SopSetting {
+  return {
+    id: row.id,
+    enabled: fromBool(row.enabled),
+    timezone: row.timezone,
+    humanBehavior: {
+      stepDelayMinMs: row.step_delay_min_ms,
+      stepDelayMaxMs: row.step_delay_max_ms,
+      batchDelayMinMs: row.batch_delay_min_ms,
+      batchDelayMaxMs: row.batch_delay_max_ms,
+      resumeViewMinMs: row.resume_view_min_ms,
+      resumeViewMaxMs: row.resume_view_max_ms,
+      replyTargetMinutes: row.reply_target_minutes,
+    },
+    steps: parseSopSteps(row.steps_json),
+    updatedAt: row.updated_at,
+  };
+}
+
+const SOP_ACTIONS: readonly SopStepAction[] = [
+  "CHECK_LOGIN",
+  "SYNC_POSITIONS",
+  "SYNC_UNREAD",
+  "SYNC_ALL_CONVERSATIONS",
+  "SYNC_ARCHIVED_CONVERSATIONS",
+  "PROCESS_UNREAD_CONVERSATIONS",
+  "REFRESH_JOBS",
+  "GREET_CANDIDATES",
+  "REVIEW_RESUMES",
+  "INVITE_INTERVIEW",
+  "REVIEW_ANALYTICS",
+  "PRIVATE_DOMAIN_SYNC",
+];
+
+function parseSopSteps(value: string): SopStep[] {
+  return parseJsonArray(value, "SOP steps").map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`SOP step ${index + 1} must be an object.`);
+    }
+    const step = item as Partial<SopStep>;
+    validateSopStep(step, index);
+    return {
+      id: step.id,
+      time: step.time,
+      title: step.title,
+      action: step.action,
+      enabled: step.enabled,
+      jobKeywords: step.jobKeywords,
+      batchSize: step.batchSize,
+      dailyLimit: step.dailyLimit,
+      notes: step.notes,
+    };
+  });
+}
+
+function assertSopHumanBehavior(input: SopHumanBehaviorSetting): void {
+  assertPositiveInteger(input.stepDelayMinMs, "SOP step delay minimum");
+  assertPositiveInteger(input.stepDelayMaxMs, "SOP step delay maximum");
+  assertPositiveInteger(input.batchDelayMinMs, "SOP batch delay minimum");
+  assertPositiveInteger(input.batchDelayMaxMs, "SOP batch delay maximum");
+  assertPositiveInteger(input.resumeViewMinMs, "SOP resume view minimum");
+  assertPositiveInteger(input.resumeViewMaxMs, "SOP resume view maximum");
+  assertPositiveInteger(input.replyTargetMinutes, "SOP reply target minutes");
+  if (input.stepDelayMinMs > input.stepDelayMaxMs) {
+    throw new Error("SOP step delay minimum cannot be greater than maximum.");
+  }
+  if (input.batchDelayMinMs > input.batchDelayMaxMs) {
+    throw new Error("SOP batch delay minimum cannot be greater than maximum.");
+  }
+  if (input.resumeViewMinMs > input.resumeViewMaxMs) {
+    throw new Error("SOP resume view minimum cannot be greater than maximum.");
+  }
+}
+
+function assertPositiveInteger(value: number, label: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer.`);
+  }
+}
+
+function validateSopStep(
+  step: Partial<SopStep>,
+  index: number,
+): asserts step is SopStep {
+  const label = `SOP step ${index + 1}`;
+  if (typeof step.id !== "string" || !step.id.trim()) {
+    throw new Error(`${label} id is required.`);
+  }
+  if (typeof step.time !== "string" || !/^\d{2}:\d{2}$/.test(step.time)) {
+    throw new Error(`${label} time must use HH:mm format.`);
+  }
+  const [hourText, minuteText] = step.time.split(":");
+  const hour = Number.parseInt(hourText!, 10);
+  const minute = Number.parseInt(minuteText!, 10);
+  if (hour > 23 || minute > 59) {
+    throw new Error(`${label} time is outside 00:00-23:59.`);
+  }
+  if (typeof step.title !== "string" || !step.title.trim()) {
+    throw new Error(`${label} title is required.`);
+  }
+  if (!SOP_ACTIONS.includes(step.action as SopStepAction)) {
+    throw new Error(`${label} action is unsupported: ${String(step.action)}`);
+  }
+  if (typeof step.enabled !== "boolean") {
+    throw new Error(`${label} enabled must be boolean.`);
+  }
+  if (!Array.isArray(step.jobKeywords) || step.jobKeywords.some((item) => typeof item !== "string")) {
+    throw new Error(`${label} jobKeywords must be a string array.`);
+  }
+  assertPositiveInteger(step.batchSize as number, `${label} batchSize`);
+  assertPositiveInteger(step.dailyLimit as number, `${label} dailyLimit`);
+  if (typeof step.notes !== "string") {
+    throw new Error(`${label} notes must be string.`);
+  }
 }
 
 type ConversationRow = {
@@ -647,6 +904,13 @@ export function updateListeningStatus(status: ListeningStatus): BossAccount {
   getDb()
     .query("UPDATE boss_account SET listening_status = ? WHERE id = 'default'")
     .run(status);
+  return getAccount();
+}
+
+export function resetListeningStatusOnStartup(): BossAccount {
+  getDb()
+    .query("UPDATE boss_account SET listening_status = 'STOPPED' WHERE id = 'default'")
+    .run();
   return getAccount();
 }
 
@@ -791,14 +1055,17 @@ export function updateAISetting(input: AISettingInput): AISetting {
   if (!input.model.trim()) {
     throw new Error("AI model cannot be empty.");
   }
+  if (!input.baseUrl.trim()) {
+    throw new Error("AI base URL cannot be empty.");
+  }
   if (!input.prompt.trim()) {
     throw new Error("AI prompt cannot be empty.");
   }
   const current = getAISettingSecret();
   const apiKey = input.apiKey === undefined ? current.api_key : input.apiKey.trim() || null;
   getDb()
-    .query("UPDATE ai_setting SET model = ?, api_key = ?, prompt = ?, updated_at = ? WHERE id = 'default'")
-    .run(input.model.trim(), apiKey, input.prompt, nowIso());
+    .query("UPDATE ai_setting SET model = ?, base_url = ?, api_key = ?, prompt = ?, updated_at = ? WHERE id = 'default'")
+    .run(input.model.trim(), input.baseUrl.trim(), apiKey, input.prompt, nowIso());
   return getAISetting();
 }
 
@@ -926,6 +1193,70 @@ export function updateBotBehaviorSetting(input: Omit<BotBehaviorSetting, "id" | 
       nowIso(),
     );
   return getBotBehaviorSetting();
+}
+
+export function getSopSetting(): SopSetting {
+  const row = getDb()
+    .query<SopSettingRow, []>("SELECT * FROM sop_setting WHERE id = 'default'")
+    .get();
+  if (!row) {
+    throw new Error("Default SOP setting was not initialized.");
+  }
+  return mapSopSetting(row);
+}
+
+export function updateSopSetting(input: SopSettingInput): SopSetting {
+  if (!input.timezone.trim()) {
+    throw new Error("SOP timezone cannot be empty.");
+  }
+  assertSopHumanBehavior(input.humanBehavior);
+  if (input.steps.length === 0) {
+    throw new Error("SOP must contain at least one step.");
+  }
+  const normalizedSteps = input.steps.map((step, index) => {
+    validateSopStep(step, index);
+    return {
+      id: step.id.trim(),
+      time: step.time,
+      title: step.title.trim(),
+      action: step.action,
+      enabled: step.enabled,
+      jobKeywords: step.jobKeywords.map((item) => item.trim()).filter(Boolean),
+      batchSize: step.batchSize,
+      dailyLimit: step.dailyLimit,
+      notes: step.notes.trim(),
+    } satisfies SopStep;
+  });
+  getDb()
+    .query(
+      `UPDATE sop_setting
+       SET enabled = ?,
+           timezone = ?,
+           step_delay_min_ms = ?,
+           step_delay_max_ms = ?,
+           batch_delay_min_ms = ?,
+           batch_delay_max_ms = ?,
+           resume_view_min_ms = ?,
+           resume_view_max_ms = ?,
+           reply_target_minutes = ?,
+           steps_json = ?,
+           updated_at = ?
+       WHERE id = 'default'`,
+    )
+    .run(
+      bool(input.enabled),
+      input.timezone.trim(),
+      input.humanBehavior.stepDelayMinMs,
+      input.humanBehavior.stepDelayMaxMs,
+      input.humanBehavior.batchDelayMinMs,
+      input.humanBehavior.batchDelayMaxMs,
+      input.humanBehavior.resumeViewMinMs,
+      input.humanBehavior.resumeViewMaxMs,
+      input.humanBehavior.replyTargetMinutes,
+      JSON.stringify(normalizedSteps),
+      nowIso(),
+    );
+  return getSopSetting();
 }
 
 export function listConversations(): Conversation[] {

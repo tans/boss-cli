@@ -5,6 +5,8 @@ import type {
   AutomationLog,
   BotBehaviorSetting,
   BossAccount,
+  ChatTestInput,
+  ChatTestResult,
   Conversation,
   ConversationAnalysis,
   DashboardSummary,
@@ -13,6 +15,8 @@ import type {
   QueueItem,
   ReplyTemplate,
   ReplyTemplateType,
+  SopSetting,
+  SopSettingInput,
   WorkingHours,
 } from "@boss/shared";
 
@@ -61,10 +65,11 @@ export const api = {
   account: () => request<BossAccount>("/api/account"),
   login: () => request<QueueItem>("/api/account/login", { method: "POST" }),
   startListening: () =>
-    request<{ account: BossAccount; queueItem: QueueItem }>("/api/listening/start", {
+    request<BossAccount>("/api/listening/start", {
       method: "POST",
     }),
   stopListening: () => request<BossAccount>("/api/listening/stop", { method: "POST" }),
+  runQueueOnce: () => request<BossAccount>("/api/queue/run-once", { method: "POST" }),
   syncUnread: () => request<QueueItem>("/api/queue/sync-unread", { method: "POST" }),
   syncAllConversations: () =>
     request<QueueItem>("/api/queue/sync-all-conversations", { method: "POST" }),
@@ -89,6 +94,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  runChatTest: (body: ChatTestInput) =>
+    request<ChatTestResult>("/api/ai-settings/chat-test", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   workingHours: () => request<WorkingHours>("/api/working-hours"),
   updateWorkingHours: (body: Omit<WorkingHours, "id">) =>
     request<WorkingHours>("/api/working-hours", {
@@ -107,6 +117,13 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  sop: () => request<SopSetting>("/api/sop"),
+  updateSop: (body: SopSettingInput) =>
+    request<SopSetting>("/api/sop", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  runSop: () => request<QueueItem>("/api/sop/run", { method: "POST" }),
   conversations: () => request<Conversation[]>("/api/conversations"),
   conversation: (id: string) =>
     request<{ conversation: Conversation; messages: Message[] }>(`/api/conversations/${id}`),

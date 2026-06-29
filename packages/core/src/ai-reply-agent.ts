@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BossChatSnapshot } from "./boss-bridge.js";
+import type { BossChatSnapshot } from "@boss/shared";
 
 type AgentConfig = {
   agentName: string;
@@ -286,17 +286,23 @@ ${input.latestCandidateText}
 async function callOpenAIChatCompletion(input: {
   apiKey: string | null;
   model: string;
+  baseUrl: string;
   prompt: string;
 }): Promise<string> {
   const apiKey = input.apiKey?.trim();
+  const baseUrl = input.baseUrl.trim();
   if (!apiKey) {
     throw new Error("AI API Key 未配置，请先在 AI 设置中保存 API Key。");
+  }
+  if (!baseUrl) {
+    throw new Error("AI 接口地址未配置，请先在 AI 设置中保存 OpenAI 兼容接口地址。");
   }
   if (!input.model.trim()) {
     throw new Error("AI 模型未配置。");
   }
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const endpoint = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -320,17 +326,17 @@ async function callOpenAIChatCompletion(input: {
     body = JSON.parse(bodyText) as OpenAIChatCompletionResponse;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`OpenAI 响应不是合法 JSON：${message}`);
+    throw new Error(`OpenAI 兼容接口响应不是合法 JSON：${message}`);
   }
 
   if (!response.ok) {
     const detail = body.error?.message || bodyText;
-    throw new Error(`OpenAI 请求失败：HTTP ${response.status} ${response.statusText}；${detail}`);
+    throw new Error(`OpenAI 兼容接口请求失败：${endpoint}；HTTP ${response.status} ${response.statusText}；${detail}`);
   }
 
   const content = body.choices?.[0]?.message?.content;
   if (typeof content !== "string" || !content.trim()) {
-    throw new Error("OpenAI 响应缺少 choices[0].message.content。");
+    throw new Error("OpenAI 兼容接口响应缺少 choices[0].message.content。");
   }
   return content.trim();
 }
@@ -347,6 +353,7 @@ export class AiReplyAgent {
     llm: {
       apiKey: string | null;
       model: string;
+      baseUrl: string;
     },
   ): Promise<AiReplyAgentResult> {
     const intent = detectIntent(input.latestCandidateText);
@@ -376,6 +383,7 @@ export class AiReplyAgent {
     const text = await callOpenAIChatCompletion({
       apiKey: llm.apiKey,
       model: llm.model,
+      baseUrl: llm.baseUrl,
       prompt,
     });
 
